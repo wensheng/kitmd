@@ -2,6 +2,12 @@
 name = "kitmd"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal-based markdown and mermaid renderer/viewer using the Kitty graphics protocol"
+license = "MIT"
+repository = "https://github.com/wensheng/kitmd"
+readme = "README.md"
+keywords = ["cli", "utility", "markdown", "mermaid"]
+categories = ["command-line-utilities"]
 
 [features]
 default = []
