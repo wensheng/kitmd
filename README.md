@@ -2,6 +2,13 @@
 
 **Render Markdown and Mermaid diagrams directly in your terminal, with zero browser handoff and PNG output when you need a file.**
 
+(Part of kit* series of graphic terminal apps:
+[kitim](https://github.com/wensheng/kitim)
+[kitmd](https://github.com/wensheng/kitmd)
+[kitpdf](https://github.com/wensheng/kitpdf)
+[kitdraw](https://github.com/wensheng/kitdraw)
+[kitDOOM](https://github.com/wensheng/kitdoom))
+
 (kitmd only runs on terminals that support Kitty Graphicas Protocol, such as: **Kitty**, **Ghostty**, **cmux**, **WezTerm**)
 
 ## Install
