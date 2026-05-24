@@ -643,6 +643,21 @@ fn compute_flowchart_layout(
         .map(|e| measure_edge_field(&e.end_label))
         .collect();
 
+    if graph.kind == crate::mermaid_engine::ir::DiagramKind::Flowchart && graph.subgraphs.is_empty()
+    {
+        if let Some(layout) = flowchart::dagre_layout::try_compute_flowchart_layout(
+            graph,
+            nodes.clone(),
+            &edge_route_labels,
+            &edge_start_labels,
+            &edge_end_labels,
+            theme,
+            config,
+        ) {
+            return layout;
+        }
+    }
+
     let mut label_dummy_ids: Vec<Option<String>> = vec![None; graph.edges.len()];
     flowchart::manual_layout::assign_positions_manual(
         graph,

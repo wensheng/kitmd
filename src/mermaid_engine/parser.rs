@@ -23,7 +23,7 @@ static PIPE_LABEL_RE: Lazy<Regex> = Lazy::new(|| {
 });
 static QUOTED_LABEL_ARROW_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"^(?P<left>.+?)\s*(?P<start><)?(?P<dash1>[-.=ox]*[-=]+[-.=ox]*)\s+"(?P<label>[^"]+)"\s+(?P<dash2>[-.=ox]*[-=]+[-.=ox]*)(?P<end>>)?\s*(?P<right>.+)$"#,
+        r#"^(?P<left>.+?)\s*(?P<start><)?(?P<dash1>[-.=ox]*[-=]+[-.=ox]*)\s+(?:"(?P<label_dq>[^"]+)"|'(?P<label_sq>[^']+)')\s+(?P<dash2>[-.=ox]*[-=]+[-.=ox]*)(?P<end>>)?\s*(?P<right>.+)$"#,
     )
     .unwrap()
 });
@@ -5768,7 +5768,11 @@ fn parse_edge_line(line: &str) -> Option<(String, Option<String>, String, EdgeMe
     if let Some(caps) = QUOTED_LABEL_ARROW_RE.captures(line) {
         let left = caps.name("left")?.as_str().trim();
         let right = caps.name("right")?.as_str().trim();
-        let label_clean = caps.name("label")?.as_str().trim();
+        let label_clean = caps
+            .name("label_dq")
+            .or_else(|| caps.name("label_sq"))?
+            .as_str()
+            .trim();
         if !label_clean.is_empty() && !left.is_empty() && !right.is_empty() {
             let start = caps.name("start").map(|m| m.as_str()).unwrap_or("");
             let dash1 = caps.name("dash1")?.as_str();

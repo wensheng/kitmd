@@ -148,7 +148,30 @@ pub fn render_error_block(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mermaid_engine::{ir::NodeShape, parser::parse_mermaid};
+    use crate::mermaid_engine::{
+        Layout, NodeLayout, Theme, config::LayoutConfig, ir::NodeShape, layout::compute_layout,
+        parser::parse_mermaid,
+    };
+
+    const README_HOW_IT_WORKS: &str = r#"flowchart TD
+    input["Markdown or Mermaid input"] --> detect{"Input type"}
+    detect -->|Markdown| markdown["Comrak GFM parser"]
+    detect -->|Mermaid| mermaid["Rust Mermaid parser and layout"]
+
+    markdown --> blocks["Markdown block renderer"]
+    mermaid --> svg["Mermaid SVG renderer"]
+
+    assets["Local images and bundled fonts"] --> blocks
+    assets --> raster
+
+    svg --> raster["resvg rasterizer"]
+    blocks --> image["Raster image pipeline"]
+    raster --> image
+
+    image --> output{"Output target"}
+    output -->|Terminal| kitty["Kitty graphics protocol"]
+    output -->|File| png["PNG export"]
+"#;
 
     #[test]
     fn renders_flowchart_to_svg() {
@@ -170,6 +193,94 @@ mod tests {
         let rendered = render_mermaid_png(
             "sequenceDiagram\nAlice->>Bob: Hello",
             &MermaidRenderOptions::default(),
+        )
+        .unwrap();
+        assert!(rendered.width > 0);
+        assert!(rendered.height > 0);
+        assert!(!rendered.png.is_empty());
+    }
+
+    #[test]
+    fn readme_how_it_works_flowchart_uses_balanced_dagre_geometry() {
+        let layout = readme_how_it_works_layout();
+        let input = node_center(&layout, "input");
+        let detect = node_center(&layout, "detect");
+        let markdown = node_center(&layout, "markdown");
+        let mermaid = node_center(&layout, "mermaid");
+        let assets = node_center(&layout, "assets");
+        let svg = node_center(&layout, "svg");
+        let raster = node_center(&layout, "raster");
+        let image = node_center(&layout, "image");
+        let output = node_center(&layout, "output");
+        let kitty = node_center(&layout, "kitty");
+        let png = node_center(&layout, "png");
+
+        assert!((input.0 - detect.0).abs() < 40.0);
+        assert!(input.1 < detect.1);
+        assert!(markdown.0 < detect.0);
+        assert!(mermaid.0 > detect.0);
+        assert!(assets.0 > markdown.0 && assets.0 < mermaid.0);
+        assert!(raster.1 > svg.1);
+        assert!(image.1 > raster.1);
+        assert!(output.1 > image.1);
+        assert!(kitty.1 > output.1);
+        assert!(png.1 > output.1);
+    }
+
+    #[test]
+    fn readme_how_it_works_flowchart_edges_avoid_non_endpoint_nodes() {
+        let layout = readme_how_it_works_layout();
+        for edge in &layout.edges {
+            for segment in edge.points.windows(2) {
+                let a = segment[0];
+                let b = segment[1];
+                for (node_id, node) in &layout.nodes {
+                    if node_id == &edge.from || node_id == &edge.to || node.hidden {
+                        continue;
+                    }
+                    assert!(
+                        !segment_intersects_node_interior(a, b, node),
+                        "edge {} -> {} crosses node {}",
+                        edge.from,
+                        edge.to,
+                        node_id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readme_how_it_works_decision_outputs_touch_diamond_outline() {
+        let layout = readme_how_it_works_layout();
+        let output = layout.nodes.get("output").unwrap();
+        for target in ["kitty", "png"] {
+            let edge = layout
+                .edges
+                .iter()
+                .find(|edge| edge.from == "output" && edge.to == target)
+                .unwrap();
+            let start = edge.points.first().copied().unwrap();
+            let outline_distance = diamond_outline_distance(start, output);
+            assert!(
+                outline_distance < 0.02,
+                "edge output -> {target} should start on diamond outline, got distance {outline_distance}"
+            );
+        }
+    }
+
+    #[test]
+    fn readme_how_it_works_flowchart_renders_nonempty_png_and_curved_svg() {
+        let svg = render_mermaid_svg(README_HOW_IT_WORKS).unwrap();
+        assert!(svg.contains("<svg"));
+        assert!(svg.contains(" C "));
+
+        let rendered = render_mermaid_png(
+            README_HOW_IT_WORKS,
+            &MermaidRenderOptions {
+                theme: ThemeMode::Dark,
+                zoom: 1.0,
+            },
         )
         .unwrap();
         assert!(rendered.width > 0);
@@ -265,5 +376,74 @@ mod tests {
             Some("优先")
         );
         assert_eq!(parsed.graph.quadrant.points[0].label, "活动一");
+    }
+
+    fn readme_how_it_works_layout() -> Layout {
+        let parsed = parse_mermaid(README_HOW_IT_WORKS).unwrap();
+        compute_layout(&parsed.graph, &Theme::modern(), &LayoutConfig::default())
+    }
+
+    fn node_center(layout: &Layout, node_id: &str) -> (f32, f32) {
+        let node = layout.nodes.get(node_id).unwrap();
+        (node.x + node.width / 2.0, node.y + node.height / 2.0)
+    }
+
+    fn diamond_outline_distance(point: (f32, f32), node: &NodeLayout) -> f32 {
+        let center = (node.x + node.width / 2.0, node.y + node.height / 2.0);
+        let normalized = (point.0 - center.0).abs() / (node.width / 2.0)
+            + (point.1 - center.1).abs() / (node.height / 2.0);
+        (normalized - 1.0).abs()
+    }
+
+    fn segment_intersects_node_interior(a: (f32, f32), b: (f32, f32), node: &NodeLayout) -> bool {
+        let pad = 1.0;
+        let x1 = node.x + pad;
+        let y1 = node.y + pad;
+        let x2 = node.x + node.width - pad;
+        let y2 = node.y + node.height - pad;
+        if x2 <= x1 || y2 <= y1 {
+            return false;
+        }
+
+        if point_in_rect(a, x1, y1, x2, y2) || point_in_rect(b, x1, y1, x2, y2) {
+            return true;
+        }
+
+        segments_intersect(a, b, (x1, y1), (x2, y1))
+            || segments_intersect(a, b, (x2, y1), (x2, y2))
+            || segments_intersect(a, b, (x2, y2), (x1, y2))
+            || segments_intersect(a, b, (x1, y2), (x1, y1))
+    }
+
+    fn point_in_rect(point: (f32, f32), x1: f32, y1: f32, x2: f32, y2: f32) -> bool {
+        point.0 > x1 && point.0 < x2 && point.1 > y1 && point.1 < y2
+    }
+
+    fn segments_intersect(a: (f32, f32), b: (f32, f32), c: (f32, f32), d: (f32, f32)) -> bool {
+        let o1 = orient(a, b, c);
+        let o2 = orient(a, b, d);
+        let o3 = orient(c, d, a);
+        let o4 = orient(c, d, b);
+        if o1.abs() < f32::EPSILON && on_segment(a, c, b) {
+            return true;
+        }
+        if o2.abs() < f32::EPSILON && on_segment(a, d, b) {
+            return true;
+        }
+        if o3.abs() < f32::EPSILON && on_segment(c, a, d) {
+            return true;
+        }
+        if o4.abs() < f32::EPSILON && on_segment(c, b, d) {
+            return true;
+        }
+        (o1 > 0.0) != (o2 > 0.0) && (o3 > 0.0) != (o4 > 0.0)
+    }
+
+    fn orient(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    }
+
+    fn on_segment(a: (f32, f32), p: (f32, f32), b: (f32, f32)) -> bool {
+        p.0 >= a.0.min(b.0) && p.0 <= a.0.max(b.0) && p.1 >= a.1.min(b.1) && p.1 <= a.1.max(b.1)
     }
 }

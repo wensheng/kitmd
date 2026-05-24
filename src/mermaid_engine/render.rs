@@ -983,9 +983,12 @@ pub fn render_svg_with_dimensions(
             _ => 2.0,
         };
         for (edge_idx, edge) in layout.edges.iter().enumerate() {
-            let d = if layout.kind == crate::mermaid_engine::ir::DiagramKind::Mindmap
-                && edge.points.len() > 2
-            {
+            let use_basis_curve = matches!(
+                layout.kind,
+                crate::mermaid_engine::ir::DiagramKind::Mindmap
+                    | crate::mermaid_engine::ir::DiagramKind::Flowchart
+            ) && edge.points.len() > 2;
+            let d = if use_basis_curve {
                 basis_curve_path(&edge.points)
             } else {
                 points_to_path(&edge.points)
