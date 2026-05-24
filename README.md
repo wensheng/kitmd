@@ -44,21 +44,28 @@ kitmd docs/architecture.md -o architecture.png
 
 ## How It Works
 
-```text
-Markdown / Mermaid input
-        |
-        v
-Rust parser + layout engine
-        |
-        v
-Raster image pipeline
-        |
-        +--> Kitty graphics protocol
-        |
-        +--> PNG file output
+```mermaid
+flowchart TD
+    input["Markdown or Mermaid input"] --> detect{"Input type"}
+    detect -->|Markdown| markdown["Comrak GFM parser"]
+    detect -->|Mermaid| mermaid["Rust Mermaid parser and layout"]
+
+    markdown --> blocks["Markdown block renderer"]
+    mermaid --> svg["Mermaid SVG renderer"]
+
+    assets["Local images and bundled fonts"] --> blocks
+    assets --> raster
+
+    svg --> raster["resvg rasterizer"]
+    blocks --> image["Raster image pipeline"]
+    raster --> image
+
+    image --> output{"Output target"}
+    output -->|Terminal| kitty["Kitty graphics protocol"]
+    output -->|File| png["PNG export"]
 ```
 
-kitmd keeps the hot path local: Markdown is parsed with Comrak, Mermaid is parsed and laid out in Rust, SVG is rasterized with resvg, and terminal output streams through the Kitty graphics protocol.
+kitmd keeps the hot path local: Markdown is parsed with Comrak’s GFM extensions, Mermaid is parsed and laid out in Rust, local images and bundled fonts are resolved before rasterization, SVG is rasterized with resvg, and terminal output streams through the Kitty graphics protocol.
 
 ---
 
@@ -69,4 +76,3 @@ kitmd [--input-type auto|markdown|mermaid] [--width-cols N] [--theme dark|light]
 ```
 
 `--output` writes a PNG file and skips terminal rendering. Markdown exports as one tall PNG; Mermaid exports the rendered diagram PNG directly.
-
