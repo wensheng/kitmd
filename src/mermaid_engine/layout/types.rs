@@ -135,7 +135,7 @@ pub struct SequenceActivationLayout {
 pub struct SequenceNumberLayout {
     pub x: f32,
     pub y: f32,
-    pub value: usize,
+    pub value: f32,
 }
 
 #[derive(Debug, Clone)]

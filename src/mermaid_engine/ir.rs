@@ -80,6 +80,12 @@ pub struct SequenceNote {
     pub index: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SequenceAutonumber {
+    pub start: f32,
+    pub step: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct PieSlice {
     pub label: String,
@@ -411,7 +417,7 @@ pub struct Graph {
     pub sequence_frames: Vec<SequenceFrame>,
     pub sequence_notes: Vec<SequenceNote>,
     pub sequence_activations: Vec<SequenceActivation>,
-    pub sequence_autonumber: Option<usize>,
+    pub sequence_autonumber: Option<SequenceAutonumber>,
     pub sequence_boxes: Vec<SequenceBox>,
     pub state_notes: Vec<StateNote>,
     pub pie_slices: Vec<PieSlice>,

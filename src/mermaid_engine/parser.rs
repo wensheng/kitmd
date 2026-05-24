@@ -755,6 +755,15 @@ fn normalize_class_id(token: &str) -> (String, Option<String>) {
     (trimmed.to_string(), None)
 }
 
+fn qualify_class_id(id: &str, namespace_stack: &[String]) -> String {
+    let id = id.trim();
+    if namespace_stack.is_empty() || id.contains('.') || id.is_empty() {
+        id.to_string()
+    } else {
+        format!("{}.{}", namespace_stack.join("."), id)
+    }
+}
+
 fn is_class_stereotype(entry: &str) -> bool {
     let trimmed = entry.trim();
     trimmed.starts_with("<<") && trimmed.ends_with(">>") && trimmed.len() > 4
@@ -940,7 +949,7 @@ fn parse_state_note(
     if target.is_empty() || label.is_empty() {
         return None;
     }
-    Some((position, target.to_string(), label.to_string()))
+    Some((position, strip_quotes(target), normalize_label_text(label)))
 }
 
 fn parse_state_transition(line: &str) -> Option<(String, EdgeMeta, String, Option<String>)> {
@@ -1300,7 +1309,7 @@ fn parse_sequence_note(
         return None;
     }
 
-    Some((position, participants, label.to_string()))
+    Some((position, participants, normalize_label_text(label)))
 }
 
 fn split_label(input: &str) -> (String, Option<String>) {
@@ -1308,11 +1317,25 @@ fn split_label(input: &str) -> (String, Option<String>) {
         let label = right.trim();
         let target = left.trim();
         if !label.is_empty() {
-            return (target.to_string(), Some(label.to_string()));
+            return (target.to_string(), Some(normalize_label_text(label)));
         }
         return (target.to_string(), None);
     }
     (input.trim().to_string(), None)
+}
+
+fn parse_sequence_autonumber(parts: &[&str]) -> crate::mermaid_engine::ir::SequenceAutonumber {
+    let start = parts
+        .first()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(1.0);
+    let step = parts
+        .get(1)
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value != 0.0)
+        .unwrap_or(1.0);
+    crate::mermaid_engine::ir::SequenceAutonumber { start, step }
 }
 
 fn parse_class_diagram(input: &str) -> Result<ParseOutput> {
@@ -1325,6 +1348,7 @@ fn parse_class_diagram(input: &str) -> Result<ParseOutput> {
     let mut stereotypes: HashMap<String, Vec<String>> = HashMap::new();
     let mut labels: HashMap<String, String> = HashMap::new();
     let mut current_class: Option<String> = None;
+    let mut namespace_stack: Vec<String> = Vec::new();
 
     for raw_line in lines {
         let line = raw_line.trim();
@@ -1378,11 +1402,26 @@ fn parse_class_diagram(input: &str) -> Result<ParseOutput> {
             continue;
         }
 
+        if line == "}" && !namespace_stack.is_empty() {
+            namespace_stack.pop();
+            continue;
+        }
+
+        if lower.starts_with("namespace ") && line.ends_with('{') {
+            let name = line[9..line.len() - 1].trim();
+            if !name.is_empty() {
+                namespace_stack.push(strip_quotes(name));
+            }
+            continue;
+        }
+
         if let Some((left, right, meta, label, start_label, end_label)) =
             parse_class_relation_line(line)
         {
             let (left_id, left_label) = normalize_class_id(&left);
             let (right_id, right_label) = normalize_class_id(&right);
+            let left_id = qualify_class_id(&left_id, &namespace_stack);
+            let right_id = qualify_class_id(&right_id, &namespace_stack);
             if let Some(label) = left_label {
                 labels.insert(left_id.clone(), label);
             }
@@ -1420,6 +1459,7 @@ fn parse_class_diagram(input: &str) -> Result<ParseOutput> {
         if line.starts_with("class ") {
             let rest = line.trim_start_matches("class ").trim();
             if let Some((id, label, body, open_body)) = parse_class_declaration(rest) {
+                let id = qualify_class_id(&id, &namespace_stack);
                 if let Some(label) = label.clone() {
                     labels.insert(id.clone(), label);
                 }
@@ -1447,6 +1487,7 @@ fn parse_class_diagram(input: &str) -> Result<ParseOutput> {
         }
 
         if let Some((id, member)) = parse_class_member_line(line) {
+            let id = qualify_class_id(&id, &namespace_stack);
             if is_class_stereotype(&member) {
                 stereotypes.entry(id).or_default().push(member);
             } else {
@@ -1590,7 +1631,7 @@ fn parse_er_relation_line(
         let label = if label.is_empty() {
             None
         } else {
-            Some(label.to_string())
+            Some(normalize_label_text(label))
         };
         (before.trim(), label)
     } else {
@@ -3736,7 +3777,7 @@ fn parse_quadrant_diagram(input: &str) -> Result<ParseOutput> {
         if lower.starts_with("title") {
             let title = line.get(5..).unwrap_or("").trim();
             if !title.is_empty() {
-                graph.quadrant.title = Some(title.to_string());
+                graph.quadrant.title = Some(normalize_label_text(title));
             }
             continue;
         }
@@ -3744,8 +3785,8 @@ fn parse_quadrant_diagram(input: &str) -> Result<ParseOutput> {
             // Format: x-axis Low Reach --> High Reach
             let rest = line.get(6..).unwrap_or("").trim();
             if let Some((left, right)) = rest.split_once("-->") {
-                graph.quadrant.x_axis_left = Some(left.trim().to_string());
-                graph.quadrant.x_axis_right = Some(right.trim().to_string());
+                graph.quadrant.x_axis_left = Some(normalize_label_text(left));
+                graph.quadrant.x_axis_right = Some(normalize_label_text(right));
             }
             continue;
         }
@@ -3753,15 +3794,15 @@ fn parse_quadrant_diagram(input: &str) -> Result<ParseOutput> {
             // Format: y-axis Low Engagement --> High Engagement
             let rest = line.get(6..).unwrap_or("").trim();
             if let Some((bottom, top)) = rest.split_once("-->") {
-                graph.quadrant.y_axis_bottom = Some(bottom.trim().to_string());
-                graph.quadrant.y_axis_top = Some(top.trim().to_string());
+                graph.quadrant.y_axis_bottom = Some(normalize_label_text(bottom));
+                graph.quadrant.y_axis_top = Some(normalize_label_text(top));
             }
             continue;
         }
         if lower.starts_with("quadrant-") {
             // Format: quadrant-1 We should expand
             if let Some(rest) = line.get(10..) {
-                let label = rest.trim().to_string();
+                let label = normalize_label_text(rest);
                 if lower.starts_with("quadrant-1") {
                     graph.quadrant.quadrant_labels[0] = Some(label);
                 } else if lower.starts_with("quadrant-2") {
@@ -3794,7 +3835,7 @@ fn parse_quadrant_diagram(input: &str) -> Result<ParseOutput> {
 
 fn parse_quadrant_point_coords(line: &str) -> Option<(String, f32, f32)> {
     let (left, right) = line.split_once(':')?;
-    let label = left.trim().to_string();
+    let label = normalize_label_text(left);
     if label.is_empty() {
         return None;
     }
@@ -5282,17 +5323,15 @@ fn parse_sequence_diagram(input: &str) -> Result<ParseOutput> {
         }
         if lower.starts_with("autonumber") {
             let parts = line.split_whitespace().collect::<Vec<_>>();
-            if parts.len() >= 2 {
-                let token = parts[1].to_ascii_lowercase();
-                if token == "off" || token == "stop" || token == "disable" {
-                    graph.sequence_autonumber = None;
-                } else if let Ok(start) = parts[1].parse::<usize>() {
-                    graph.sequence_autonumber = Some(start);
-                } else {
-                    graph.sequence_autonumber = Some(1);
-                }
+            if parts.get(1).is_some_and(|token| {
+                matches!(
+                    token.to_ascii_lowercase().as_str(),
+                    "off" | "stop" | "disable"
+                )
+            }) {
+                graph.sequence_autonumber = None;
             } else {
-                graph.sequence_autonumber = Some(1);
+                graph.sequence_autonumber = Some(parse_sequence_autonumber(&parts[1..]));
             }
             continue;
         }
@@ -5717,7 +5756,7 @@ fn parse_edge_line(line: &str) -> Option<(String, Option<String>, String, EdgeMe
             let edge_meta = parse_edge_meta(arrow);
             return Some((
                 left.to_string(),
-                Some(label_clean.to_string()),
+                Some(normalize_label_text(label_clean)),
                 right.to_string(),
                 edge_meta,
             ));
@@ -5739,7 +5778,7 @@ fn parse_edge_line(line: &str) -> Option<(String, Option<String>, String, EdgeMe
             let edge_meta = parse_edge_meta(&arrow);
             return Some((
                 left.to_string(),
-                Some(label_clean.to_string()),
+                Some(normalize_label_text(label_clean)),
                 right.to_string(),
                 edge_meta,
             ));
@@ -5763,7 +5802,7 @@ fn parse_edge_line(line: &str) -> Option<(String, Option<String>, String, EdgeMe
             let edge_meta = parse_edge_meta(&arrow);
             return Some((
                 left.to_string(),
-                Some(label_clean.to_string()),
+                Some(normalize_label_text(label_clean)),
                 right.to_string(),
                 edge_meta,
             ));
@@ -5786,7 +5825,7 @@ fn parse_edge_line(line: &str) -> Option<(String, Option<String>, String, EdgeMe
             let edge_meta = parse_edge_meta(&arrow);
             return Some((
                 left.to_string(),
-                Some(label_clean.to_string()),
+                Some(normalize_label_text(label_clean)),
                 right.to_string(),
                 edge_meta,
             ));
@@ -5811,7 +5850,7 @@ fn parse_edge_line(line: &str) -> Option<(String, Option<String>, String, EdgeMe
 
     let (label, right_token) = if let Some(stripped) = right.strip_prefix('|') {
         if let Some(end) = stripped.find('|') {
-            let label = stripped[..end].trim().to_string();
+            let label = normalize_label_text(stripped[..end].trim());
             let rest = stripped[end + 1..].trim();
             (Some(label), rest)
         } else {
@@ -6178,6 +6217,10 @@ fn parse_node_token(
 ) {
     let (base, classes) = split_inline_classes(token);
     let trimmed = base.trim();
+    if let Some((id, meta)) = split_node_metadata(trimmed) {
+        let (label, shape) = parse_node_metadata(meta);
+        return (id.to_string(), label, shape, classes);
+    }
     if let Some((id, label, shape)) = split_asymmetric_label(trimmed) {
         return (id, Some(label), Some(shape), classes);
     }
@@ -6187,6 +6230,114 @@ fn parse_node_token(
 
     let id = trimmed.split_whitespace().next().unwrap_or("").to_string();
     (id, None, None, classes)
+}
+
+fn split_node_metadata(token: &str) -> Option<(&str, &str)> {
+    let (id, rest) = token.split_once("@{")?;
+    let id = id.trim();
+    let rest = rest.trim();
+    if id.is_empty() || !rest.ends_with('}') {
+        return None;
+    }
+    Some((id, rest[..rest.len() - 1].trim()))
+}
+
+fn parse_node_metadata(
+    meta: &str,
+) -> (Option<String>, Option<crate::mermaid_engine::ir::NodeShape>) {
+    let attrs = parse_metadata_attributes(meta);
+    let label = attrs
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("label"))
+        .map(|(_, value)| normalize_label_text(value))
+        .filter(|label| !label.is_empty());
+    let shape = attrs
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("shape"))
+        .and_then(|(_, value)| metadata_shape(value));
+    (label, shape)
+}
+
+fn metadata_shape(value: &str) -> Option<crate::mermaid_engine::ir::NodeShape> {
+    match normalize_label_text(value).to_ascii_lowercase().as_str() {
+        "datastore" | "database" | "db" | "cylinder" => {
+            Some(crate::mermaid_engine::ir::NodeShape::Cylinder)
+        }
+        "rect" | "rectangle" => Some(crate::mermaid_engine::ir::NodeShape::Rectangle),
+        "rounded" | "roundrect" | "roundedrect" => {
+            Some(crate::mermaid_engine::ir::NodeShape::RoundRect)
+        }
+        "stadium" => Some(crate::mermaid_engine::ir::NodeShape::Stadium),
+        "subroutine" => Some(crate::mermaid_engine::ir::NodeShape::Subroutine),
+        "circle" => Some(crate::mermaid_engine::ir::NodeShape::Circle),
+        "doublecircle" => Some(crate::mermaid_engine::ir::NodeShape::DoubleCircle),
+        "diamond" | "decision" => Some(crate::mermaid_engine::ir::NodeShape::Diamond),
+        "hexagon" => Some(crate::mermaid_engine::ir::NodeShape::Hexagon),
+        "parallelogram" => Some(crate::mermaid_engine::ir::NodeShape::Parallelogram),
+        "trapezoid" => Some(crate::mermaid_engine::ir::NodeShape::Trapezoid),
+        _ => None,
+    }
+}
+
+fn parse_metadata_attributes(meta: &str) -> Vec<(String, String)> {
+    split_metadata_fields(meta)
+        .into_iter()
+        .filter_map(|field| {
+            let (key, value) = field.split_once(':')?;
+            let key = key.trim().to_string();
+            let value = value.trim().to_string();
+            if key.is_empty() || value.is_empty() {
+                None
+            } else {
+                Some((key, value))
+            }
+        })
+        .collect()
+}
+
+fn split_metadata_fields(input: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            current.push(ch);
+            escaped = true;
+            continue;
+        }
+        if let Some(q) = quote {
+            current.push(ch);
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            current.push(ch);
+            quote = Some(ch);
+            continue;
+        }
+        if ch == ',' {
+            let field = current.trim();
+            if !field.is_empty() {
+                fields.push(field.to_string());
+            }
+            current.clear();
+            continue;
+        }
+        current.push(ch);
+    }
+    let field = current.trim();
+    if !field.is_empty() {
+        fields.push(field.to_string());
+    }
+    fields
 }
 
 fn split_asymmetric_label(
@@ -6374,7 +6525,7 @@ fn parse_shape_from_braces(raw: &str) -> (String, crate::mermaid_engine::ir::Nod
     )
 }
 
-fn strip_quotes(input: &str) -> String {
+fn normalize_label_text(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
         trimmed[1..trimmed.len() - 1].to_string()
@@ -6383,6 +6534,10 @@ fn strip_quotes(input: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn strip_quotes(input: &str) -> String {
+    normalize_label_text(input)
 }
 
 fn count_indent(line: &str) -> usize {
@@ -7108,6 +7263,20 @@ A["foo & bar"] & B --> C"#;
     }
 
     #[test]
+    fn parse_quadrant_unicode_labels_without_outer_quotes() {
+        let input = "quadrantChart\n  title \"增长\"\n  x-axis \"低\" --> \"高\"\n  y-axis \"慢\" --> \"快\"\n  quadrant-1 \"优先\"\n  \"活动一\" : [0.2, 0.8]";
+        let parsed = parse_mermaid(input).unwrap();
+        assert_eq!(parsed.graph.quadrant.title.as_deref(), Some("增长"));
+        assert_eq!(parsed.graph.quadrant.x_axis_left.as_deref(), Some("低"));
+        assert_eq!(parsed.graph.quadrant.y_axis_top.as_deref(), Some("快"));
+        assert_eq!(
+            parsed.graph.quadrant.quadrant_labels[0].as_deref(),
+            Some("优先")
+        );
+        assert_eq!(parsed.graph.quadrant.points[0].label, "活动一");
+    }
+
+    #[test]
     fn parse_zenuml_basic() {
         let input = "zenuml\n  Alice->Bob: Hello\n  Bob-->Alice: Reply";
         let parsed = parse_mermaid(input).unwrap();
@@ -7251,6 +7420,13 @@ A["foo & bar"] & B --> C"#;
     }
 
     #[test]
+    fn parse_state_note_strips_outer_quotes() {
+        let input = "stateDiagram-v2\nstate Idle\nnote right of Idle: \"waiting\"";
+        let parsed = parse_mermaid(input).unwrap();
+        assert_eq!(parsed.graph.state_notes[0].label, "waiting");
+    }
+
+    #[test]
     fn parse_sequence_diagram_basic() {
         let input = "sequenceDiagram\nparticipant A as Alice\nparticipant Bob\nA->>Bob: Hello\nBob-->>A: Hi";
         let parsed = parse_mermaid(input).unwrap();
@@ -7281,6 +7457,23 @@ A["foo & bar"] & B --> C"#;
         let input = "sequenceDiagram\nautonumber off\nA->>B: ping";
         let parsed = parse_mermaid(input).unwrap();
         assert!(parsed.graph.sequence_autonumber.is_none());
+    }
+
+    #[test]
+    fn parse_sequence_decimal_autonumber() {
+        let input = "sequenceDiagram\nautonumber 1.5 0.25\nA->>B: ping";
+        let parsed = parse_mermaid(input).unwrap();
+        let autonumber = parsed.graph.sequence_autonumber.unwrap();
+        assert_eq!(autonumber.start, 1.5);
+        assert_eq!(autonumber.step, 0.25);
+    }
+
+    #[test]
+    fn parse_sequence_quoted_message_and_note_labels() {
+        let input = "sequenceDiagram\nA->>B: \"quoted ping\"\nNote over A,B: 'quoted note'";
+        let parsed = parse_mermaid(input).unwrap();
+        assert_eq!(parsed.graph.edges[0].label.as_deref(), Some("quoted ping"));
+        assert_eq!(parsed.graph.sequence_notes[0].label, "quoted note");
     }
 
     #[test]
@@ -7374,6 +7567,35 @@ A["foo & bar"] & B --> C"#;
         let classes = parsed.graph.node_classes.get("A").unwrap();
         assert!(classes.iter().any(|c| c == "hot"));
         assert!(classes.iter().any(|c| c == "cold"));
+    }
+
+    #[test]
+    fn parse_flowchart_v11_datastore_shape() {
+        let input = "flowchart LR\nA@{ shape: datastore, label: \"Datastore\" } --> B";
+        let parsed = parse_mermaid(input).unwrap();
+        let node = parsed.graph.nodes.get("A").unwrap();
+        assert_eq!(node.label, "Datastore");
+        assert_eq!(node.shape, crate::mermaid_engine::ir::NodeShape::Cylinder);
+    }
+
+    #[test]
+    fn parse_flowchart_quoted_edge_labels_without_outer_quotes() {
+        let input = "flowchart LR\nA -->|\"Edge label\"| B\nB -. 'Other label' .-> C";
+        let parsed = parse_mermaid(input).unwrap();
+        assert_eq!(parsed.graph.edges[0].label.as_deref(), Some("Edge label"));
+        assert_eq!(parsed.graph.edges[1].label.as_deref(), Some("Other label"));
+    }
+
+    #[test]
+    fn parse_class_namespace_syntax() {
+        let input = "classDiagram\nnamespace Domain {\n  class Service\n  Service : +call()\n}";
+        let parsed = parse_mermaid(input).unwrap();
+        assert!(parsed.graph.nodes.contains_key("Domain.Service"));
+        assert!(
+            parsed.graph.nodes["Domain.Service"]
+                .label
+                .contains("+call()")
+        );
     }
 
     #[test]

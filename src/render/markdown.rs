@@ -12,7 +12,7 @@ use image::RgbaImage;
 use crate::render::{
     image_renderer::{
         Canvas, RenderTheme, RenderedImage, TextBlockOptions, TextRenderer, TextSpan, TextStyle,
-        ThemeMode, resize_to_width, rgba,
+        ThemeMode, resize_to_exact_width, resize_to_width, rgba,
     },
     mermaid::{MermaidRenderOptions, rasterize_svg, render_error_block, render_mermaid_image},
 };
@@ -48,7 +48,11 @@ impl MarkdownRenderOptions {
 #[derive(Debug, Clone, PartialEq)]
 enum ParagraphUnit {
     Text(TextSpan),
-    Image { url: String, alt: String },
+    Image {
+        url: String,
+        alt: String,
+        width_px: Option<u32>,
+    },
 }
 
 pub fn render_markdown_document(
@@ -76,7 +80,8 @@ fn render_markdown_blocks(
     options: &MarkdownRenderOptions,
 ) -> Result<(Vec<RgbaImage>, u32, image::Rgba<u8>, u32)> {
     let arena = Arena::new();
-    let root = parse_document(&arena, input, &comrak_options());
+    let input = preprocess_markdown_image_width_syntax(input);
+    let root = parse_document(&arena, &input, &comrak_options());
     let theme = RenderTheme::for_mode(options.theme);
     let mut renderer =
         MarkdownRenderer::new(options.clone(), theme, base_dir.map(Path::to_path_buf));
@@ -101,6 +106,7 @@ fn comrak_options() -> Options<'static> {
     options.extension.strikethrough = true;
     options.extension.tasklist = true;
     options.extension.autolink = true;
+    options.extension.tagfilter = true;
     options
 }
 
@@ -160,7 +166,7 @@ impl MarkdownRenderer {
                 if code.info.trim().eq_ignore_ascii_case("mermaid") {
                     blocks.push(self.render_mermaid_block(&code.literal));
                 } else {
-                    blocks.push(self.code_block(&code.literal, code.info.trim()));
+                    blocks.push(self.code_block(&code.literal));
                 }
             }
             NodeValue::ThematicBreak => blocks.push(self.rule_block()),
@@ -168,7 +174,14 @@ impl MarkdownRenderer {
             NodeValue::BlockQuote => blocks.push(self.blockquote_block(node)),
             NodeValue::List(list) => self.render_list(node, *list, blocks)?,
             NodeValue::HtmlBlock(html) => {
-                blocks.push(self.code_block(&html.literal, "html"));
+                if is_html_comment(&html.literal) {
+                    return Ok(());
+                }
+                if let Some(image) = parse_html_image(&html.literal) {
+                    blocks.push(self.image_block(&image.url, &image.alt, image.width_px));
+                } else {
+                    blocks.push(self.code_block(&html.literal));
+                }
             }
             NodeValue::Document => {
                 for child in node.children() {
@@ -193,11 +206,11 @@ impl MarkdownRenderer {
         for unit in units {
             match unit {
                 ParagraphUnit::Text(span) => pending_text.push(span),
-                ParagraphUnit::Image { url, alt } => {
+                ParagraphUnit::Image { url, alt, width_px } => {
                     if !pending_text.is_empty() {
                         blocks.push(self.paragraph_block(std::mem::take(&mut pending_text)));
                     }
-                    blocks.push(self.image_block(&url, &alt));
+                    blocks.push(self.image_block(&url, &alt, width_px));
                 }
             }
         }
@@ -304,19 +317,8 @@ impl MarkdownRenderer {
         )
     }
 
-    fn code_block(&mut self, literal: &str, info: &str) -> RgbaImage {
-        let text = if info.is_empty() {
-            literal.to_string()
-        } else {
-            format!("{info}\n{literal}")
-        };
-        let spans = vec![TextSpan {
-            text,
-            style: TextStyle {
-                code: true,
-                ..TextStyle::default()
-            },
-        }];
+    fn code_block(&mut self, literal: &str) -> RgbaImage {
+        let spans = code_block_spans(literal);
         self.text.render_text_block(
             &spans,
             &TextBlockOptions {
@@ -460,9 +462,17 @@ impl MarkdownRenderer {
         Ok(canvas.into_image())
     }
 
-    fn image_block(&mut self, url: &str, alt: &str) -> RgbaImage {
+    fn image_block(&mut self, url: &str, alt: &str, width_px: Option<u32>) -> RgbaImage {
         match load_markdown_image(url, self.base_dir.as_deref(), self.options.theme) {
-            Ok(image) => self.framed_image_block(resize_to_width(&image, self.content_width())),
+            Ok(image) => {
+                let content_width = self.content_width();
+                let image = if let Some(width) = width_px {
+                    resize_to_exact_width(&image, width.min(content_width).max(1))
+                } else {
+                    resize_to_width(&image, content_width)
+                };
+                self.framed_image_block(image)
+            }
             Err(error) => self.placeholder_block(alt, &error.to_string()),
         }
     }
@@ -587,14 +597,31 @@ fn collect_inline_node<'a>(
             next.link = true;
             collect_inline_children(node, &mut next, units);
         }
-        NodeValue::Image(link) => units.push(ParagraphUnit::Image {
-            url: link.url.clone(),
-            alt: plain_text(node),
-        }),
-        NodeValue::HtmlInline(tag) => units.push(ParagraphUnit::Text(TextSpan {
-            text: tag.clone(),
-            style: style.clone(),
-        })),
+        NodeValue::Image(link) => {
+            let spec = parse_markdown_image_spec(&link.url);
+            units.push(ParagraphUnit::Image {
+                url: spec.url,
+                alt: plain_text(node),
+                width_px: spec.width_px,
+            });
+        }
+        NodeValue::HtmlInline(tag) => {
+            if is_html_comment(tag) {
+                return;
+            }
+            if let Some(image) = parse_html_image(tag) {
+                units.push(ParagraphUnit::Image {
+                    url: image.url,
+                    alt: image.alt,
+                    width_px: image.width_px,
+                });
+                return;
+            }
+            units.push(ParagraphUnit::Text(TextSpan {
+                text: tag.clone(),
+                style: style.clone(),
+            }));
+        }
         NodeValue::TaskItem(done) => units.push(ParagraphUnit::Text(TextSpan {
             text: if done.symbol.is_some() {
                 "[x] "
@@ -642,6 +669,16 @@ fn normalize_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
         return vec![TextSpan::plain(" ")];
     }
     spans
+}
+
+fn code_block_spans(literal: &str) -> Vec<TextSpan> {
+    vec![TextSpan {
+        text: literal.to_string(),
+        style: TextStyle {
+            code: true,
+            ..TextStyle::default()
+        },
+    }]
 }
 
 fn plain_text<'a>(node: &'a AstNode<'a>) -> String {
@@ -705,8 +742,246 @@ fn measured_column_widths(rows: &[Vec<Vec<TextSpan>>], columns: usize, available
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImageSpec {
+    url: String,
+    alt: String,
+    width_px: Option<u32>,
+}
+
+fn parse_markdown_image_spec(raw: &str) -> ImageSpec {
+    let raw = raw.trim();
+    let Some((url, meta)) = raw.rsplit_once('|') else {
+        return ImageSpec {
+            url: raw.to_string(),
+            alt: String::new(),
+            width_px: None,
+        };
+    };
+    let Some(width_px) = parse_width_directive(meta) else {
+        return ImageSpec {
+            url: raw.to_string(),
+            alt: String::new(),
+            width_px: None,
+        };
+    };
+    ImageSpec {
+        url: url.trim().to_string(),
+        alt: String::new(),
+        width_px: Some(width_px),
+    }
+}
+
+fn parse_width_directive(meta: &str) -> Option<u32> {
+    meta.split_whitespace().find_map(|token| {
+        let (name, value) = token.split_once('=')?;
+        if name.eq_ignore_ascii_case("width") {
+            parse_image_width(value)
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_image_width(value: &str) -> Option<u32> {
+    let value = value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_end_matches("px")
+        .trim();
+    value.parse::<u32>().ok().filter(|width| *width > 0)
+}
+
+fn is_html_comment(html: &str) -> bool {
+    let trimmed = html.trim();
+    trimmed.starts_with("<!--") && trimmed.ends_with("-->")
+}
+
+fn parse_html_image(html: &str) -> Option<ImageSpec> {
+    let trimmed = html.trim();
+    let content = trimmed.strip_prefix('<')?.trim_start();
+    if content.len() < 3 || !content[..3].eq_ignore_ascii_case("img") {
+        return None;
+    }
+    let rest = &content[3..];
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|ch| !ch.is_whitespace() && ch != '/' && ch != '>')
+    {
+        return None;
+    }
+    let attrs = rest
+        .trim()
+        .trim_end_matches('>')
+        .trim_end_matches('/')
+        .trim();
+    let attrs = parse_html_attributes(attrs);
+    let url = attrs
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("src"))
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    let alt = attrs
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("alt"))
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default();
+    let width_px = attrs
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("width"))
+        .and_then(|(_, value)| parse_image_width(value));
+
+    Some(ImageSpec { url, alt, width_px })
+}
+
+fn parse_html_attributes(input: &str) -> Vec<(String, String)> {
+    let mut attrs = Vec::new();
+    let mut i = 0usize;
+    let bytes = input.as_bytes();
+    while i < bytes.len() {
+        while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+
+        let name_start = i;
+        while i < bytes.len()
+            && !bytes[i].is_ascii_whitespace()
+            && bytes[i] != b'='
+            && bytes[i] != b'/'
+        {
+            i += 1;
+        }
+        let name = input[name_start..i].trim().to_ascii_lowercase();
+        if name.is_empty() {
+            break;
+        }
+
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        let value = if i < bytes.len() && bytes[i] == b'=' {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                let quote = bytes[i];
+                i += 1;
+                let value_start = i;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += 1;
+                }
+                let value = input[value_start..i].to_string();
+                if i < bytes.len() {
+                    i += 1;
+                }
+                value
+            } else {
+                let value_start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                input[value_start..i].trim().to_string()
+            }
+        } else {
+            String::new()
+        };
+        attrs.push((name, value));
+    }
+    attrs
+}
+
+fn preprocess_markdown_image_width_syntax(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_fence: Option<char> = None;
+    for segment in input.split_inclusive('\n') {
+        let (line, newline) = segment
+            .strip_suffix('\n')
+            .map(|line| (line, "\n"))
+            .unwrap_or((segment, ""));
+
+        if let Some(marker) = markdown_fence_marker(line) {
+            out.push_str(line);
+            out.push_str(newline);
+            if in_fence == Some(marker) {
+                in_fence = None;
+            } else if in_fence.is_none() {
+                in_fence = Some(marker);
+            }
+            continue;
+        }
+
+        if in_fence.is_some() {
+            out.push_str(line);
+        } else {
+            out.push_str(&rewrite_markdown_image_width_line(line));
+        }
+        out.push_str(newline);
+    }
+    if !input.ends_with('\n') && input.is_empty() {
+        return String::new();
+    }
+    out
+}
+
+fn markdown_fence_marker(line: &str) -> Option<char> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("```") {
+        Some('`')
+    } else if trimmed.starts_with("~~~") {
+        Some('~')
+    } else {
+        None
+    }
+}
+
+fn rewrite_markdown_image_width_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut cursor = 0usize;
+    while let Some(relative_start) = line[cursor..].find("![") {
+        let start = cursor + relative_start;
+        out.push_str(&line[cursor..start]);
+
+        let alt_start = start + 2;
+        let Some(relative_alt_end) = line[alt_start..].find("](") else {
+            out.push_str(&line[start..]);
+            return out;
+        };
+        let alt_end = alt_start + relative_alt_end;
+        let dest_start = alt_end + 2;
+        let Some(relative_dest_end) = line[dest_start..].find(')') else {
+            out.push_str(&line[start..]);
+            return out;
+        };
+        let dest_end = dest_start + relative_dest_end;
+        let destination = &line[dest_start..dest_end];
+
+        if destination.trim_start().starts_with('<')
+            || parse_markdown_image_spec(destination).width_px.is_none()
+        {
+            out.push_str(&line[start..=dest_end]);
+        } else {
+            out.push_str(&line[start..dest_start]);
+            out.push('<');
+            out.push_str(destination);
+            out.push('>');
+            out.push(')');
+        }
+        cursor = dest_end + 1;
+    }
+    out.push_str(&line[cursor..]);
+    out
+}
+
 pub fn resolve_image_path(url: &str, base_dir: Option<&Path>) -> Result<PathBuf> {
-    if url.starts_with("http://") || url.starts_with("https://") {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
         return Err(anyhow!("remote images are not supported"));
     }
     let path_part = url.split(['#', '?']).next().unwrap_or(url);
@@ -850,6 +1125,90 @@ mod tests {
     }
 
     #[test]
+    fn comrak_options_enable_gfm_extensions() {
+        let options = comrak_options();
+        assert!(options.extension.table);
+        assert!(options.extension.strikethrough);
+        assert!(options.extension.autolink);
+        assert!(options.extension.tasklist);
+        assert!(options.extension.tagfilter);
+        assert!(!options.extension.footnotes);
+        assert!(!options.extension.math_dollars);
+        assert!(!options.extension.wikilinks_title_after_pipe);
+        assert!(!options.extension.alerts);
+    }
+
+    #[test]
+    fn code_block_spans_ignore_info_string() {
+        let spans = code_block_spans("echo hello\n");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "echo hello\n");
+        assert!(spans[0].style.code);
+        assert!(!spans[0].text.contains("bash"));
+    }
+
+    #[test]
+    fn inline_html_comments_are_ignored() {
+        let arena = Arena::new();
+        let root = parse_document(&arena, "A <!-- hidden --> B", &comrak_options());
+        let paragraph = root.first_child().unwrap();
+        let text = collect_rich_text(paragraph)
+            .into_iter()
+            .map(|span| span.text)
+            .collect::<String>();
+        assert_eq!(text, "A  B");
+        assert!(!text.contains("hidden"));
+    }
+
+    #[test]
+    fn block_html_comments_are_ignored() {
+        let (blocks, _, _, _) =
+            render_markdown_blocks("<!-- hidden -->\n\nvisible", None, &opts()).unwrap();
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn parses_markdown_image_width_spec() {
+        let spec = parse_markdown_image_spec("images/a.png | width=100");
+        assert_eq!(spec.url, "images/a.png");
+        assert_eq!(spec.width_px, Some(100));
+    }
+
+    #[test]
+    fn parses_html_image_tag_with_width() {
+        let spec = parse_html_image("<img src=images/a.png alt=\"A\" width='100' />").unwrap();
+        assert_eq!(spec.url, "images/a.png");
+        assert_eq!(spec.alt, "A");
+        assert_eq!(spec.width_px, Some(100));
+    }
+
+    #[test]
+    fn collects_markdown_image_width_from_inline_image() {
+        let arena = Arena::new();
+        let input = preprocess_markdown_image_width_syntax("![](images/a.png | width=100)");
+        let root = parse_document(&arena, &input, &comrak_options());
+        let paragraph = root.first_child().unwrap();
+        let mut units = Vec::new();
+        collect_inline_children(paragraph, &mut TextStyle::default(), &mut units);
+        assert_eq!(
+            units,
+            vec![ParagraphUnit::Image {
+                url: "images/a.png".to_string(),
+                alt: String::new(),
+                width_px: Some(100),
+            }]
+        );
+    }
+
+    #[test]
+    fn markdown_image_width_preprocess_skips_code_fences() {
+        let input = "```bash\n![](images/a.png | width=100)\n```\n![](images/a.png | width=100)";
+        let rewritten = preprocess_markdown_image_width_syntax(input);
+        assert!(rewritten.contains("```bash\n![](images/a.png | width=100)\n```"));
+        assert!(rewritten.ends_with("![](<images/a.png | width=100>)"));
+    }
+
+    #[test]
     fn parses_small_big_and_strike_as_inline_styles() {
         let arena = Arena::new();
         let root = parse_document(
@@ -889,6 +1248,32 @@ mod tests {
     fn resolves_relative_image_path() {
         let path = resolve_image_path("assets/a.png", Some(Path::new("/tmp/doc"))).unwrap();
         assert_eq!(path, Path::new("/tmp/doc/assets/a.png"));
+    }
+
+    #[test]
+    fn rejects_remote_image_path() {
+        assert!(resolve_image_path("http://example.com/a.png", None).is_err());
+        assert!(resolve_image_path("https://example.com/a.png", None).is_err());
+    }
+
+    #[test]
+    fn image_block_applies_explicit_width() {
+        let dir =
+            std::env::temp_dir().join(format!("viewmd_image_width_test_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("one.png");
+        let img = RgbaImage::from_pixel(2, 4, rgba(4, 5, 6, 255));
+        img.save(&file).unwrap();
+
+        let options = opts();
+        let theme = RenderTheme::for_mode(options.theme);
+        let mut renderer = MarkdownRenderer::new(options, theme, Some(dir.clone()));
+        let block = renderer.image_block("one.png", "", Some(100));
+        assert_eq!(block.width(), 420);
+        assert_eq!(block.height(), 218);
+
+        let _ = fs::remove_file(file);
+        let _ = fs::remove_dir(dir);
     }
 
     #[test]

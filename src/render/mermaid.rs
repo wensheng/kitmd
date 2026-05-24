@@ -10,7 +10,10 @@ use std::sync::Arc;
 
 use crate::{
     mermaid_engine,
-    render::image_renderer::{RenderTheme, RenderedImage, ThemeMode, rgba},
+    render::{
+        fonts,
+        image_renderer::{RenderTheme, RenderedImage, ThemeMode, rgba},
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -22,6 +25,7 @@ pub struct MermaidRenderOptions {
 static SVG_FONTDB: Lazy<Arc<Database>> = Lazy::new(|| {
     let mut database = Database::new();
     database.load_system_fonts();
+    fonts::load_bundled_fonts(&mut database);
     Arc::new(database)
 });
 
@@ -144,6 +148,7 @@ pub fn render_error_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mermaid_engine::{ir::NodeShape, parser::parse_mermaid};
 
     #[test]
     fn renders_flowchart_to_svg() {
@@ -193,5 +198,72 @@ mod tests {
         .unwrap();
         assert!(two.width >= one.width.saturating_mul(2).saturating_sub(1));
         assert!(two.height >= one.height.saturating_mul(2).saturating_sub(1));
+    }
+
+    #[test]
+    fn parses_v11_flowchart_datastore_shape() {
+        let parsed =
+            parse_mermaid("flowchart LR\nA@{ shape: datastore, label: \"Datastore\" } --> B")
+                .unwrap();
+        let node = parsed.graph.nodes.get("A").unwrap();
+        assert_eq!(node.label, "Datastore");
+        assert_eq!(node.shape, NodeShape::Cylinder);
+    }
+
+    #[test]
+    fn parses_v11_sequence_decimal_autonumber() {
+        let parsed = parse_mermaid("sequenceDiagram\nautonumber 1.5 0.25\nA->>B: ping").unwrap();
+        let autonumber = parsed.graph.sequence_autonumber.unwrap();
+        assert_eq!(autonumber.start, 1.5);
+        assert_eq!(autonumber.step, 0.25);
+    }
+
+    #[test]
+    fn parses_class_namespace_syntax() {
+        let parsed = parse_mermaid(
+            "classDiagram\nnamespace Domain {\n  class Service\n  Service : +call()\n}",
+        )
+        .unwrap();
+        assert!(parsed.graph.nodes.contains_key("Domain.Service"));
+        assert!(
+            parsed.graph.nodes["Domain.Service"]
+                .label
+                .contains("+call()")
+        );
+    }
+
+    #[test]
+    fn strips_outer_quotes_from_rendered_mermaid_labels() {
+        let flow = parse_mermaid("flowchart LR\nA -->|\"Edge label\"| B").unwrap();
+        assert_eq!(flow.graph.edges[0].label.as_deref(), Some("Edge label"));
+
+        let sequence =
+            parse_mermaid("sequenceDiagram\nA->>B: \"quoted ping\"\nNote over A,B: 'quoted note'")
+                .unwrap();
+        assert_eq!(
+            sequence.graph.edges[0].label.as_deref(),
+            Some("quoted ping")
+        );
+        assert_eq!(sequence.graph.sequence_notes[0].label, "quoted note");
+
+        let state =
+            parse_mermaid("stateDiagram-v2\nstate Idle\nnote right of Idle: \"waiting\"").unwrap();
+        assert_eq!(state.graph.state_notes[0].label, "waiting");
+    }
+
+    #[test]
+    fn parses_quadrant_unicode_labels_without_outer_quotes() {
+        let parsed = parse_mermaid(
+            "quadrantChart\n  title \"增长\"\n  x-axis \"低\" --> \"高\"\n  y-axis \"慢\" --> \"快\"\n  quadrant-1 \"优先\"\n  \"活动一\" : [0.2, 0.8]",
+        )
+        .unwrap();
+        assert_eq!(parsed.graph.quadrant.title.as_deref(), Some("增长"));
+        assert_eq!(parsed.graph.quadrant.x_axis_left.as_deref(), Some("低"));
+        assert_eq!(parsed.graph.quadrant.y_axis_top.as_deref(), Some("快"));
+        assert_eq!(
+            parsed.graph.quadrant.quadrant_labels[0].as_deref(),
+            Some("优先")
+        );
+        assert_eq!(parsed.graph.quadrant.points[0].label, "活动一");
     }
 }

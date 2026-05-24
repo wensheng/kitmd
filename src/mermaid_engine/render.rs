@@ -965,7 +965,7 @@ pub fn render_svg_with_dimensions(
                 theme.sequence_activation_fill,
                 theme.sequence_activation_border
             ));
-            let label = number.value.to_string();
+            let label = format_sequence_number(number.value);
             svg.push_str(&text_line_svg(
                 number.x,
                 number.y + theme.font_size * 0.35,
@@ -1885,6 +1885,24 @@ fn format_sankey_value(value: f32) -> String {
         format!("{rounded_1:.1}")
     } else {
         format!("{rounded_2:.2}")
+    }
+}
+
+fn format_sequence_number(value: f32) -> String {
+    if (value - value.round()).abs() < 0.0001 {
+        return format!("{value:.0}");
+    }
+    let mut formatted = format!("{value:.6}");
+    while formatted.contains('.') && formatted.ends_with('0') {
+        formatted.pop();
+    }
+    if formatted.ends_with('.') {
+        formatted.pop();
+    }
+    if formatted == "-0" {
+        "0".to_string()
+    } else {
+        formatted
     }
 }
 

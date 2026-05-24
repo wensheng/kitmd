@@ -7,6 +7,8 @@ use cosmic_text::{
 };
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 
+use crate::render::fonts;
+
 pub const META_STRIKE: usize = 1;
 pub const META_CODE: usize = 1 << 1;
 
@@ -162,7 +164,7 @@ pub struct TextRenderer {
 impl TextRenderer {
     pub fn new() -> Self {
         Self {
-            font_system: FontSystem::new(),
+            font_system: FontSystem::new_with_fonts(fonts::bundled_font_sources()),
             swash_cache: SwashCache::new(),
         }
     }
@@ -225,9 +227,9 @@ impl TextRenderer {
         let mut attrs = Attrs::new()
             .color(to_cosmic(color))
             .family(if style.code {
-                Family::Monospace
+                Family::Name(fonts::CODE_FONT_FAMILY)
             } else {
-                Family::SansSerif
+                Family::Name(fonts::PROSE_FONT_FAMILY)
             })
             .weight(if style.bold {
                 Weight::BOLD
@@ -440,6 +442,16 @@ pub fn resize_to_width(image: &RgbaImage, max_width: u32) -> RgbaImage {
         height,
         image::imageops::FilterType::Lanczos3,
     )
+}
+
+pub fn resize_to_exact_width(image: &RgbaImage, width: u32) -> RgbaImage {
+    if width == 0 || image.width() == 0 || image.width() == width {
+        return image.clone();
+    }
+    let height = ((image.height() as f32) * (width as f32 / image.width() as f32))
+        .round()
+        .max(1.0) as u32;
+    image::imageops::resize(image, width, height, image::imageops::FilterType::Lanczos3)
 }
 
 fn blend_pixel(image: &mut RgbaImage, x: u32, y: u32, src: Rgba<u8>) {

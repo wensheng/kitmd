@@ -699,8 +699,8 @@ pub(super) fn compute_sequence_layout(
     }
 
     let mut sequence_numbers = Vec::new();
-    if let Some(start) = graph.sequence_autonumber {
-        let mut value = start;
+    if let Some(autonumber) = graph.sequence_autonumber {
+        let mut value = autonumber.start;
         for (idx, edge) in graph.edges.iter().enumerate() {
             if let (Some(from), Some(y)) = (nodes.get(&edge.from), message_ys.get(idx).copied()) {
                 let from_x = sequence_lane_center(from);
@@ -715,7 +715,7 @@ pub(super) fn compute_sequence_layout(
                     y: number_y,
                     value,
                 });
-                value += 1;
+                value += autonumber.step;
             }
         }
     }
