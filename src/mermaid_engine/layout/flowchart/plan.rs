@@ -19,7 +19,7 @@ use super::super::routing::{
 };
 use super::super::{
     FLOWCHART_PORT_ROUTE_BIAS_MAX_RATIO, FLOWCHART_PORT_ROUTE_BIAS_RATIO, MULTI_EDGE_OFFSET_RATIO,
-    NodeLayout, SubgraphLayout, TextBlock, anchor_layout_for_edge,
+    NodeLayout, SubgraphLayout, TextBlock, anchor_layout_for_edge, subgraph_edge_direction,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -158,15 +158,16 @@ impl FlowchartLayoutPlan {
             else {
                 continue;
             };
+            let edge_direction = subgraph_edge_direction(graph, nodes, &edge.from, &edge.to);
             let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
                 subgraphs
                     .get(anchor_idx)
-                    .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+                    .map(|sub| anchor_layout_for_edge(from_layout, sub, edge_direction, true))
             });
             let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
                 subgraphs
                     .get(anchor_idx)
-                    .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+                    .map(|sub| anchor_layout_for_edge(to_layout, sub, edge_direction, false))
             });
             let from = temp_from.as_ref().unwrap_or(from_layout);
             let to = temp_to.as_ref().unwrap_or(to_layout);
@@ -284,7 +285,6 @@ pub(super) fn plan_edge_lanes(
 
     let mut cross_edge_offsets = vec![0.0f32; graph.edges.len()];
     if graph.kind == DiagramKind::Flowchart {
-        let is_horizontal_layout = is_horizontal(graph.direction);
         let band_size = (config.node_spacing * 2.0).max(30.0);
         let mut groups: HashMap<i32, Vec<(usize, f32)>> = HashMap::new();
         for (idx, edge) in graph.edges.iter().enumerate() {
@@ -292,15 +292,16 @@ pub(super) fn plan_edge_lanes(
             else {
                 continue;
             };
+            let edge_direction = subgraph_edge_direction(graph, nodes, &edge.from, &edge.to);
             let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
                 subgraphs
                     .get(anchor_idx)
-                    .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+                    .map(|sub| anchor_layout_for_edge(from_layout, sub, edge_direction, true))
             });
             let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
                 subgraphs
                     .get(anchor_idx)
-                    .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+                    .map(|sub| anchor_layout_for_edge(to_layout, sub, edge_direction, false))
             });
             let from = temp_from.as_ref().unwrap_or(from_layout);
             let to = temp_to.as_ref().unwrap_or(to_layout);
@@ -308,28 +309,21 @@ pub(super) fn plan_edge_lanes(
             let to_center = (to.x + to.width / 2.0, to.y + to.height / 2.0);
             let dx = to_center.0 - from_center.0;
             let dy = to_center.1 - from_center.1;
-            let cross_axis = if is_horizontal_layout {
-                dy.abs()
-            } else {
-                dx.abs()
-            };
-            let main_axis = if is_horizontal_layout {
-                dx.abs()
-            } else {
-                dy.abs()
-            };
+            let edge_horizontal = is_horizontal(edge_direction);
+            let cross_axis = if edge_horizontal { dy.abs() } else { dx.abs() };
+            let main_axis = if edge_horizontal { dx.abs() } else { dy.abs() };
             let is_secondary =
                 edge.style == crate::mermaid_engine::ir::EdgeStyle::Dotted || edge.label.is_some();
             if !is_secondary || cross_axis <= main_axis * 1.2 {
                 continue;
             }
-            let band_coord = if is_horizontal_layout {
+            let band_coord = if edge_horizontal {
                 (from_center.0 + to_center.0) * 0.5
             } else {
                 (from_center.1 + to_center.1) * 0.5
             };
             let bucket = (band_coord / band_size).round() as i32;
-            let sort_key = if is_horizontal_layout {
+            let sort_key = if edge_horizontal {
                 (from_center.1 + to_center.1) * 0.5
             } else {
                 (from_center.0 + to_center.0) * 0.5

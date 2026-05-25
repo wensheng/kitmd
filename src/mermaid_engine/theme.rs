@@ -32,6 +32,10 @@ const MERMAID_GIT_TAG_LABEL_COLOR: &str = "#131300";
 const MERMAID_GIT_TAG_LABEL_BG: &str = "#ECECFF";
 const MERMAID_GIT_TAG_LABEL_BORDER: &str = "hsl(240, 60%, 86.2745098039%)";
 const MERMAID_TEXT_COLOR: &str = "#333";
+const MERMAID_PIE_COLORS: [&str; 12] = [
+    "#2563EB", "#F97316", "#16A34A", "#DC2626", "#9333EA", "#0891B2", "#DB2777", "#CA8A04",
+    "#0D9488", "#4F46E5", "#65A30D", "#BE123C",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Theme {
@@ -123,7 +127,7 @@ impl Theme {
             pie_stroke_width: 2.0,
             pie_outer_stroke_width: 2.0,
             pie_outer_stroke_color: "#000000".to_string(),
-            pie_opacity: 0.7,
+            pie_opacity: 0.92,
         }
     }
 
@@ -173,26 +177,13 @@ impl Theme {
             pie_stroke_width: 1.6,
             pie_outer_stroke_width: 1.6,
             pie_outer_stroke_color: "#CBD5E1".to_string(),
-            pie_opacity: 0.85,
+            pie_opacity: 0.92,
         }
     }
 }
 
-fn default_pie_colors(primary: &str, secondary: &str, tertiary: &str) -> [String; 12] {
-    [
-        primary.to_string(),
-        secondary.to_string(),
-        tertiary.to_string(),
-        adjust_color(primary, 0.0, 0.0, -10.0),
-        adjust_color(secondary, 0.0, 0.0, -10.0),
-        adjust_color(tertiary, 0.0, 0.0, -10.0),
-        adjust_color(primary, 60.0, 0.0, -10.0),
-        adjust_color(primary, -60.0, 0.0, -10.0),
-        adjust_color(primary, 120.0, 0.0, 0.0),
-        adjust_color(primary, 60.0, 0.0, -20.0),
-        adjust_color(primary, -60.0, 0.0, -20.0),
-        adjust_color(primary, 120.0, 0.0, -10.0),
-    ]
+fn default_pie_colors(_primary: &str, _secondary: &str, _tertiary: &str) -> [String; 12] {
+    MERMAID_PIE_COLORS.map(|value| value.to_string())
 }
 
 pub(crate) fn adjust_color(color: &str, delta_h: f32, delta_s: f32, delta_l: f32) -> String {
@@ -292,6 +283,7 @@ fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 #[cfg(all(test, feature = "mermaid_engine_internal_tests"))]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn parse_hex_rejects_multibyte_utf8() {
@@ -308,5 +300,25 @@ mod tests {
         assert_eq!(parse_hex("#fff"), Some((1.0, 1.0, 1.0)));
         assert_eq!(parse_hex("#ff0000"), Some((1.0, 0.0, 0.0)));
         assert_eq!(parse_hex("#00ff0080"), Some((0.0, 1.0, 0.0)));
+    }
+
+    #[test]
+    fn default_pie_palette_uses_distinct_saturated_colors() {
+        let theme = Theme::modern();
+        let unique_colors: HashSet<&str> = theme.pie_colors.iter().map(String::as_str).collect();
+        assert_eq!(unique_colors.len(), theme.pie_colors.len());
+
+        for color in &theme.pie_colors {
+            let (_, saturation, lightness) =
+                parse_color_to_hsl(color).expect("pie color should be parseable");
+            assert!(
+                saturation >= 45.0,
+                "pie color {color} should not be grayish"
+            );
+            assert!(
+                (25.0..=65.0).contains(&lightness),
+                "pie color {color} should not be near-white or near-black"
+            );
+        }
     }
 }

@@ -1060,23 +1060,13 @@ pub fn render_svg_with_dimensions(
                 if edge.arrow_start
                     && let Some(point) = edge.points.first().copied()
                 {
-                    let angle = edge_endpoint_angle(&edge.points, true);
-                    let angle = layout
-                        .nodes
-                        .get(&edge.from)
-                        .and_then(|node| flowchart_endpoint_arrow_angle(point, node))
-                        .unwrap_or(angle + 180.0);
+                    let angle = edge_endpoint_angle(&edge.points, true) + 180.0;
                     svg.push_str(&arrowhead_svg(point, angle, stroke.as_str(), stroke_width));
                 }
                 if edge.arrow_end
                     && let Some(point) = edge.points.last().copied()
                 {
                     let angle = edge_endpoint_angle(&edge.points, false);
-                    let angle = layout
-                        .nodes
-                        .get(&edge.to)
-                        .and_then(|node| flowchart_endpoint_arrow_angle(point, node))
-                        .unwrap_or(angle);
                     svg.push_str(&arrowhead_svg(point, angle, stroke.as_str(), stroke_width));
                 }
             }
@@ -2955,7 +2945,7 @@ fn render_pie(pie: &PieData, theme: &Theme, config: &LayoutConfig) -> String {
         total = pie.slices.iter().map(|s| s.value.max(0.0)).sum();
     }
 
-    let slice_stroke = theme.background.as_str();
+    let slice_stroke = theme.pie_stroke_color.as_str();
     let slice_stroke_width = theme.pie_stroke_width.max(1.2);
 
     for slice in &pie.slices {
@@ -5964,37 +5954,45 @@ fn arrowhead_svg(point: (f32, f32), angle_deg: f32, stroke: &str, stroke_width: 
     )
 }
 
-fn flowchart_endpoint_arrow_angle(
-    point: (f32, f32),
-    node: &crate::mermaid_engine::layout::NodeLayout,
-) -> Option<f32> {
-    if node.hidden {
-        return None;
-    }
-    let left = (point.0 - node.x).abs();
-    let right = (point.0 - (node.x + node.width)).abs();
-    let top = (point.1 - node.y).abs();
-    let bottom = (point.1 - (node.y + node.height)).abs();
-    let (dist, angle) = [(left, 0.0), (right, 180.0), (top, 90.0), (bottom, -90.0)]
-        .into_iter()
-        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal))?;
-
-    let tolerance = node.width.max(node.height).max(1.0) * 0.25;
-    (dist <= tolerance).then_some(angle)
-}
-
 fn edge_endpoint_angle(points: &[(f32, f32)], start: bool) -> f32 {
-    if points.len() < 2 {
+    let Some((p0, p1)) = edge_endpoint_segment(points, start) else {
         return 0.0;
-    }
-    let (p0, p1) = if start {
-        (points[0], points[1])
-    } else {
-        (points[points.len() - 2], points[points.len() - 1])
     };
     let dx = p1.0 - p0.0;
     let dy = p1.1 - p0.1;
     dy.atan2(dx).to_degrees()
+}
+
+fn edge_endpoint_segment(points: &[(f32, f32)], start: bool) -> Option<((f32, f32), (f32, f32))> {
+    const MIN_SEGMENT_LEN_SQUARED: f32 = 1e-6;
+
+    if points.len() < 2 {
+        return None;
+    }
+
+    if start {
+        let first = points[0];
+        points
+            .iter()
+            .skip(1)
+            .copied()
+            .find(|point| distance_squared(first, *point) > MIN_SEGMENT_LEN_SQUARED)
+            .map(|point| (first, point))
+    } else {
+        let last = *points.last()?;
+        points[..points.len() - 1]
+            .iter()
+            .rev()
+            .copied()
+            .find(|point| distance_squared(*point, last) > MIN_SEGMENT_LEN_SQUARED)
+            .map(|point| (point, last))
+    }
+}
+
+fn distance_squared(a: (f32, f32), b: (f32, f32)) -> f32 {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    dx * dx + dy * dy
 }
 
 #[cfg(feature = "png")]
@@ -6384,6 +6382,7 @@ mod tests {
     use crate::mermaid_engine::config::LayoutConfig;
     use crate::mermaid_engine::ir::{Direction, Graph};
     use crate::mermaid_engine::layout::compute_layout;
+    use std::collections::BTreeMap;
 
     #[test]
     fn render_svg_basic() {
@@ -6536,15 +6535,68 @@ mod tests {
     }
 
     #[test]
-    fn flowchart_endpoint_arrow_angle_points_from_attached_node_side() {
-        let node = crate::mermaid_engine::layout::NodeLayout {
-            id: "A".to_string(),
-            x: 10.0,
-            y: 20.0,
-            width: 100.0,
-            height: 60.0,
+    fn edge_endpoint_angle_uses_first_nonzero_endpoint_segment() {
+        let points = vec![(0.0, 0.0), (0.0, 0.0), (10.0, 10.0), (10.0, 10.0)];
+
+        assert!((edge_endpoint_angle(&points, true) - 45.0).abs() < 0.001);
+        assert!((edge_endpoint_angle(&points, false) - 45.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn flowchart_arrowhead_rotation_follows_slanted_edge_tangent() {
+        let mut nodes = BTreeMap::new();
+        nodes.insert("A".to_string(), test_node("A", 0.0, 0.0, 30.0, 30.0));
+        nodes.insert("B".to_string(), test_node("B", 30.0, 40.0, 40.0, 30.0));
+        let layout = crate::mermaid_engine::layout::Layout {
+            kind: crate::mermaid_engine::ir::DiagramKind::Flowchart,
+            nodes,
+            edges: vec![crate::mermaid_engine::layout::EdgeLayout {
+                from: "A".to_string(),
+                to: "B".to_string(),
+                label: None,
+                start_label: None,
+                end_label: None,
+                label_anchor: None,
+                start_label_anchor: None,
+                end_label_anchor: None,
+                points: vec![(10.0, 0.0), (50.0, 40.0)],
+                directed: true,
+                arrow_start: false,
+                arrow_end: true,
+                arrow_start_kind: None,
+                arrow_end_kind: None,
+                start_decoration: None,
+                end_decoration: None,
+                style: crate::mermaid_engine::ir::EdgeStyle::Solid,
+                override_style: crate::mermaid_engine::ir::EdgeStyleOverride::default(),
+            }],
+            subgraphs: Vec::new(),
+            width: 90.0,
+            height: 90.0,
+            diagram: crate::mermaid_engine::layout::DiagramData::Graph {
+                state_notes: Vec::new(),
+            },
+        };
+
+        let svg = render_svg(&layout, &Theme::modern(), &LayoutConfig::default());
+        assert!(svg.contains("translate(50.00 40.00) rotate(45.00)"));
+    }
+
+    fn test_node(
+        id: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> crate::mermaid_engine::layout::NodeLayout {
+        crate::mermaid_engine::layout::NodeLayout {
+            id: id.to_string(),
+            x,
+            y,
+            width,
+            height,
             label: crate::mermaid_engine::layout::TextBlock {
-                lines: vec!["A".to_string()],
+                lines: vec![id.to_string()],
                 width: 10.0,
                 height: 10.0,
             },
@@ -6554,24 +6606,7 @@ mod tests {
             anchor_subgraph: None,
             hidden: false,
             icon: None,
-        };
-
-        assert_eq!(
-            flowchart_endpoint_arrow_angle((10.0, 50.0), &node),
-            Some(0.0)
-        );
-        assert_eq!(
-            flowchart_endpoint_arrow_angle((110.0, 50.0), &node),
-            Some(180.0)
-        );
-        assert_eq!(
-            flowchart_endpoint_arrow_angle((60.0, 20.0), &node),
-            Some(90.0)
-        );
-        assert_eq!(
-            flowchart_endpoint_arrow_angle((60.0, 80.0), &node),
-            Some(-90.0)
-        );
+        }
     }
 
     #[test]

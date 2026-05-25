@@ -9,7 +9,9 @@ use super::super::routing::{
     insert_label_via_point, is_horizontal, path_length, path_point_at_progress,
     segment_intersects_rect,
 };
-use super::super::{NodeLayout, SubgraphLayout, TextBlock, anchor_layout_for_edge};
+use super::super::{
+    NodeLayout, SubgraphLayout, TextBlock, anchor_layout_for_edge, subgraph_edge_direction,
+};
 
 #[derive(Clone)]
 pub(super) struct RouteLabelPlan {
@@ -147,15 +149,16 @@ fn provisional_route_label_center(
     else {
         return None;
     };
+    let edge_direction = subgraph_edge_direction(graph, ctx.nodes, &edge.from, &edge.to);
     let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
         ctx.subgraphs
             .get(anchor_idx)
-            .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+            .map(|sub| anchor_layout_for_edge(from_layout, sub, edge_direction, true))
     });
     let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
         ctx.subgraphs
             .get(anchor_idx)
-            .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+            .map(|sub| anchor_layout_for_edge(to_layout, sub, edge_direction, false))
     });
     let from = temp_from.as_ref().unwrap_or(from_layout);
     let to = temp_to.as_ref().unwrap_or(to_layout);
@@ -171,29 +174,29 @@ fn provisional_route_label_center(
     let base_offset = ctx.lane_offsets.get(idx).copied().unwrap_or_default();
 
     let mut center = ((start.0 + end.0) * 0.5, (start.1 + end.1) * 0.5);
-    if is_horizontal(graph.direction) {
+    if is_horizontal(edge_direction) {
         center.0 += base_offset;
     } else {
         center.1 += base_offset;
     }
     if graph.kind == DiagramKind::Flowchart {
-        let main_span = if is_horizontal(graph.direction) {
+        let main_span = if is_horizontal(edge_direction) {
             (end.0 - start.0).abs()
         } else {
             (end.1 - start.1).abs()
         };
-        let label_main = if is_horizontal(graph.direction) {
+        let label_main = if is_horizontal(edge_direction) {
             label.width + 2.0 * ctx.edge_label_pad_x
         } else {
             label.height + 2.0 * ctx.edge_label_pad_y
         };
-        let label_cross = if is_horizontal(graph.direction) {
+        let label_cross = if is_horizontal(edge_direction) {
             label.height + 2.0 * ctx.edge_label_pad_y
         } else {
             label.width + 2.0 * ctx.edge_label_pad_x
         };
         let margin = (ctx.config.node_spacing * 0.35).max(14.0);
-        let preferred_sign = if is_horizontal(graph.direction) {
+        let preferred_sign = if is_horizontal(edge_direction) {
             let dy = end.1 - start.1;
             if dy.abs() > 2.0 {
                 dy.signum()
@@ -217,7 +220,7 @@ fn provisional_route_label_center(
             let clearance = label_cross * 0.5 + margin;
             for sign in [preferred_sign, -preferred_sign] {
                 let mut candidate = center;
-                if is_horizontal(graph.direction) {
+                if is_horizontal(edge_direction) {
                     candidate.1 += sign * clearance;
                 } else {
                     candidate.0 += sign * clearance;

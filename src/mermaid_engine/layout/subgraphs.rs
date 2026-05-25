@@ -499,6 +499,131 @@ pub(super) fn top_level_subgraph_indices(graph: &Graph) -> Vec<usize> {
     SubgraphTree::build(graph).top_level
 }
 
+fn subgraph_depths(tree: &SubgraphTree) -> Vec<usize> {
+    let sub_count = tree.parent.len();
+    let mut depths = vec![0; sub_count];
+    for idx in 0..sub_count {
+        let mut depth = 0usize;
+        let mut cur = idx;
+        while let Some(parent_idx) = tree.parent.get(cur).and_then(|parent| *parent) {
+            depth += 1;
+            cur = parent_idx;
+            if depth > sub_count {
+                break;
+            }
+        }
+        depths[idx] = depth;
+    }
+    depths
+}
+
+fn subgraph_layout_node_ids(
+    graph: &Graph,
+    tree: &SubgraphTree,
+    sub_idx: usize,
+    nodes: &BTreeMap<String, NodeLayout>,
+) -> Vec<String> {
+    let Some(sub) = graph.subgraphs.get(sub_idx) else {
+        return Vec::new();
+    };
+
+    let mut excluded_descendant_nodes: HashSet<&str> = HashSet::new();
+    let mut layout_ids = Vec::new();
+    let mut seen = HashSet::new();
+
+    for &child_idx in tree.children.get(sub_idx).into_iter().flatten() {
+        let child = &graph.subgraphs[child_idx];
+        let Some(anchor_id) = subgraph_anchor_id(child, nodes) else {
+            continue;
+        };
+        for node_id in &child.nodes {
+            excluded_descendant_nodes.insert(node_id.as_str());
+        }
+        if seen.insert(anchor_id.to_string()) {
+            layout_ids.push(anchor_id.to_string());
+        }
+    }
+
+    for node_id in &sub.nodes {
+        if excluded_descendant_nodes.contains(node_id.as_str()) {
+            continue;
+        }
+        if seen.insert(node_id.clone()) {
+            layout_ids.push(node_id.clone());
+        }
+    }
+
+    layout_ids.sort_by(|a, b| {
+        graph
+            .node_order
+            .get(a)
+            .copied()
+            .unwrap_or(usize::MAX)
+            .cmp(&graph.node_order.get(b).copied().unwrap_or(usize::MAX))
+            .then_with(|| a.cmp(b))
+    });
+    layout_ids
+}
+
+fn center_subgraph_rank_buckets(
+    node_ids: &[String],
+    ranks: &HashMap<String, usize>,
+    direction: Direction,
+    nodes: &mut BTreeMap<String, NodeLayout>,
+) {
+    let mut rank_ids: HashMap<usize, Vec<String>> = HashMap::new();
+    for node_id in node_ids {
+        rank_ids
+            .entry(*ranks.get(node_id).unwrap_or(&0))
+            .or_default()
+            .push(node_id.clone());
+    }
+    if rank_ids.len() <= 1 {
+        return;
+    }
+
+    let mut bucket_bounds: Vec<(Vec<String>, f32)> = Vec::new();
+    let mut max_span = 0.0f32;
+    for ids in rank_ids.into_values() {
+        let mut min_cross = f32::MAX;
+        let mut max_cross = f32::MIN;
+        for node_id in &ids {
+            let Some(node) = nodes.get(node_id) else {
+                continue;
+            };
+            if is_horizontal(direction) {
+                min_cross = min_cross.min(node.y);
+                max_cross = max_cross.max(node.y + node.height);
+            } else {
+                min_cross = min_cross.min(node.x);
+                max_cross = max_cross.max(node.x + node.width);
+            }
+        }
+        if min_cross == f32::MAX {
+            continue;
+        }
+        let span = max_cross - min_cross;
+        max_span = max_span.max(span);
+        bucket_bounds.push((ids, span));
+    }
+
+    for (ids, span) in bucket_bounds {
+        let delta = (max_span - span) * 0.5;
+        if delta.abs() < 0.01 {
+            continue;
+        }
+        for node_id in ids {
+            if let Some(node) = nodes.get_mut(&node_id) {
+                if is_horizontal(direction) {
+                    node.y += delta;
+                } else {
+                    node.x += delta;
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn apply_subgraph_node_layout_passes(
     graph: &Graph,
     nodes: &mut BTreeMap<String, NodeLayout>,
@@ -536,6 +661,7 @@ pub(super) fn apply_subgraph_direction_overrides(
     config: &LayoutConfig,
     skip_indices: &HashSet<usize>,
 ) {
+    let tree = SubgraphTree::build(graph);
     for (idx, sub) in graph.subgraphs.iter().enumerate() {
         if skip_indices.contains(&idx) {
             continue;
@@ -552,13 +678,14 @@ pub(super) fn apply_subgraph_direction_overrides(
                 subgraph_layout_direction(graph, sub)
             }
         };
-        if sub.nodes.is_empty() || direction == graph.direction {
+        let layout_node_ids = subgraph_layout_node_ids(graph, &tree, idx, nodes);
+        if layout_node_ids.is_empty() || direction == graph.direction {
             continue;
         }
 
         let mut min_x = f32::MAX;
         let mut min_y = f32::MAX;
-        for node_id in &sub.nodes {
+        for node_id in &layout_node_ids {
             if let Some(node) = nodes.get(node_id) {
                 min_x = min_x.min(node.x);
                 min_y = min_y.min(node.y);
@@ -569,7 +696,7 @@ pub(super) fn apply_subgraph_direction_overrides(
         }
 
         let mut temp_nodes: BTreeMap<String, NodeLayout> = BTreeMap::new();
-        for node_id in &sub.nodes {
+        for node_id in &layout_node_ids {
             if let Some(node) = nodes.get(node_id) {
                 let mut clone = node.clone();
                 clone.x = 0.0;
@@ -578,9 +705,9 @@ pub(super) fn apply_subgraph_direction_overrides(
             }
         }
         let local_config = subgraph_layout_config(graph, false, config);
-        let ranks = compute_ranks_subset(&sub.nodes, &graph.edges, &graph.node_order);
+        let ranks = compute_ranks_subset(&layout_node_ids, &graph.edges, &graph.node_order);
         super::assign_positions(
-            &sub.nodes,
+            &layout_node_ids,
             &ranks,
             direction,
             &local_config,
@@ -588,9 +715,10 @@ pub(super) fn apply_subgraph_direction_overrides(
             0.0,
             0.0,
         );
+        center_subgraph_rank_buckets(&layout_node_ids, &ranks, direction, &mut temp_nodes);
         let mut temp_min_x = f32::MAX;
         let mut temp_min_y = f32::MAX;
-        for node_id in &sub.nodes {
+        for node_id in &layout_node_ids {
             if let Some(node) = temp_nodes.get(node_id) {
                 temp_min_x = temp_min_x.min(node.x);
                 temp_min_y = temp_min_y.min(node.y);
@@ -599,7 +727,7 @@ pub(super) fn apply_subgraph_direction_overrides(
         if temp_min_x == f32::MAX {
             continue;
         }
-        for node_id in &sub.nodes {
+        for node_id in &layout_node_ids {
             if let (Some(target), Some(source)) = (nodes.get_mut(node_id), temp_nodes.get(node_id))
             {
                 target.x = source.x - temp_min_x + min_x;
@@ -608,7 +736,7 @@ pub(super) fn apply_subgraph_direction_overrides(
         }
 
         if matches!(direction, Direction::RightLeft | Direction::BottomTop) {
-            mirror_subgraph_nodes(&sub.nodes, nodes, direction);
+            mirror_subgraph_nodes(&layout_node_ids, nodes, direction);
         }
     }
 }
@@ -669,6 +797,79 @@ pub(super) fn subgraph_anchor_id<'a>(
         return Some(label);
     }
     None
+}
+
+fn subgraph_anchor_graph_index(
+    graph: &Graph,
+    nodes: &BTreeMap<String, NodeLayout>,
+    anchor_id: &str,
+) -> Option<usize> {
+    graph
+        .subgraphs
+        .iter()
+        .position(|sub| subgraph_anchor_id(sub, nodes) == Some(anchor_id))
+}
+
+fn containing_subgraph_index(graph: &Graph, tree: &SubgraphTree, node_id: &str) -> Option<usize> {
+    let mut best = None;
+    let mut best_depth = 0usize;
+    for (idx, sub) in graph.subgraphs.iter().enumerate() {
+        if !sub.nodes.iter().any(|id| id == node_id) {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut cur = idx;
+        while let Some(parent_idx) = tree.parent.get(cur).and_then(|parent| *parent) {
+            depth += 1;
+            cur = parent_idx;
+            if depth > graph.subgraphs.len() {
+                break;
+            }
+        }
+        if best.is_none() || depth >= best_depth {
+            best = Some(idx);
+            best_depth = depth;
+        }
+    }
+    best
+}
+
+fn subgraph_layout_context(
+    graph: &Graph,
+    tree: &SubgraphTree,
+    nodes: &BTreeMap<String, NodeLayout>,
+    node_id: &str,
+) -> Option<usize> {
+    let node = nodes.get(node_id)?;
+    if node.anchor_subgraph.is_some()
+        && let Some(anchor_idx) = subgraph_anchor_graph_index(graph, nodes, node_id)
+    {
+        return tree.parent.get(anchor_idx).and_then(|parent| *parent);
+    }
+    containing_subgraph_index(graph, tree, node_id)
+}
+
+pub(super) fn subgraph_edge_direction(
+    graph: &Graph,
+    nodes: &BTreeMap<String, NodeLayout>,
+    from_id: &str,
+    to_id: &str,
+) -> Direction {
+    if graph.kind != DiagramKind::Flowchart || graph.subgraphs.is_empty() {
+        return graph.direction;
+    }
+
+    let tree = SubgraphTree::build(graph);
+    let from_context = subgraph_layout_context(graph, &tree, nodes, from_id);
+    let to_context = subgraph_layout_context(graph, &tree, nodes, to_id);
+    if let Some(context_idx) = from_context
+        && from_context == to_context
+        && let Some(subgraph) = graph.subgraphs.get(context_idx)
+    {
+        return subgraph_layout_direction(graph, subgraph);
+    }
+
+    graph.direction
 }
 
 pub(super) fn mark_subgraph_anchor_nodes_hidden(
@@ -828,18 +1029,21 @@ pub(super) fn subgraph_padding_from_label(
 
 fn estimate_subgraph_box_size(
     graph: &Graph,
-    sub: &crate::mermaid_engine::ir::Subgraph,
+    tree: &SubgraphTree,
+    sub_idx: usize,
     nodes: &BTreeMap<String, NodeLayout>,
     theme: &Theme,
     config: &LayoutConfig,
     anchorable: bool,
 ) -> Option<(f32, f32, f32, f32)> {
-    if sub.nodes.is_empty() {
+    let sub = graph.subgraphs.get(sub_idx)?;
+    let layout_node_ids = subgraph_layout_node_ids(graph, tree, sub_idx, nodes);
+    if layout_node_ids.is_empty() {
         return None;
     }
     let direction = subgraph_layout_direction(graph, sub);
     let mut temp_nodes: BTreeMap<String, NodeLayout> = BTreeMap::new();
-    for node_id in &sub.nodes {
+    for node_id in &layout_node_ids {
         if let Some(node) = nodes.get(node_id) {
             let mut clone = node.clone();
             clone.x = 0.0;
@@ -848,9 +1052,9 @@ fn estimate_subgraph_box_size(
         }
     }
     let local_config = subgraph_layout_config(graph, anchorable, config);
-    let ranks = compute_ranks_subset(&sub.nodes, &graph.edges, &graph.node_order);
+    let ranks = compute_ranks_subset(&layout_node_ids, &graph.edges, &graph.node_order);
     super::assign_positions(
-        &sub.nodes,
+        &layout_node_ids,
         &ranks,
         direction,
         &local_config,
@@ -858,11 +1062,12 @@ fn estimate_subgraph_box_size(
         0.0,
         0.0,
     );
+    center_subgraph_rank_buckets(&layout_node_ids, &ranks, direction, &mut temp_nodes);
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
     let mut max_x = f32::MIN;
     let mut max_y = f32::MIN;
-    for node_id in &sub.nodes {
+    for node_id in &layout_node_ids {
         if let Some(node) = temp_nodes.get(node_id) {
             min_x = min_x.min(node.x);
             min_y = min_y.min(node.y);
@@ -897,7 +1102,13 @@ pub(super) fn apply_subgraph_anchor_sizes(
     if graph.subgraphs.is_empty() {
         return anchors;
     }
-    for (idx, sub) in graph.subgraphs.iter().enumerate() {
+    let tree = SubgraphTree::build(graph);
+    let depths = subgraph_depths(&tree);
+    let mut order: Vec<usize> = (0..graph.subgraphs.len()).collect();
+    order.sort_by(|a, b| depths[*b].cmp(&depths[*a]).then_with(|| a.cmp(b)));
+
+    for idx in order {
+        let sub = &graph.subgraphs[idx];
         if is_region_subgraph(sub) || !subgraph_should_anchor(sub, graph, nodes) {
             continue;
         }
@@ -905,7 +1116,7 @@ pub(super) fn apply_subgraph_anchor_sizes(
             continue;
         };
         let Some((width, height, padding_x, top_padding)) =
-            estimate_subgraph_box_size(graph, sub, nodes, theme, config, true)
+            estimate_subgraph_box_size(graph, &tree, idx, nodes, theme, config, true)
         else {
             continue;
         };
@@ -936,20 +1147,7 @@ pub(super) fn align_subgraphs_to_anchor_nodes(
         return anchored_nodes;
     }
     let tree = SubgraphTree::build(graph);
-    let sub_count = graph.subgraphs.len();
-    let mut subgraph_depth: Vec<usize> = vec![0; sub_count];
-    for idx in 0..sub_count {
-        let mut depth = 0usize;
-        let mut cur = idx;
-        while let Some(parent_idx) = tree.parent.get(cur).and_then(|parent| *parent) {
-            depth += 1;
-            cur = parent_idx;
-            if depth > sub_count {
-                break;
-            }
-        }
-        subgraph_depth[idx] = depth;
-    }
+    let subgraph_depth = subgraph_depths(&tree);
 
     let mut ordered_anchors: Vec<(&String, &SubgraphAnchorInfo)> = anchor_info.iter().collect();
     ordered_anchors.sort_by(|(a_id, a_info), (b_id, b_info)| {
@@ -977,11 +1175,15 @@ pub(super) fn align_subgraphs_to_anchor_nodes(
         let Some(sub) = graph.subgraphs.get(info.sub_idx) else {
             continue;
         };
+        let layout_node_ids = subgraph_layout_node_ids(graph, &tree, info.sub_idx, nodes);
+        if layout_node_ids.is_empty() {
+            continue;
+        }
         let direction = subgraph_layout_direction(graph, sub);
         let local_config = subgraph_layout_config(graph, true, config);
-        let ranks = compute_ranks_subset(&sub.nodes, &graph.edges, &graph.node_order);
+        let ranks = compute_ranks_subset(&layout_node_ids, &graph.edges, &graph.node_order);
         super::assign_positions(
-            &sub.nodes,
+            &layout_node_ids,
             &ranks,
             direction,
             &local_config,
@@ -989,8 +1191,9 @@ pub(super) fn align_subgraphs_to_anchor_nodes(
             anchor_x + info.padding_x,
             anchor_y + info.top_padding,
         );
+        center_subgraph_rank_buckets(&layout_node_ids, &ranks, direction, nodes);
         if matches!(direction, Direction::RightLeft | Direction::BottomTop) {
-            mirror_subgraph_nodes(&sub.nodes, nodes, direction);
+            mirror_subgraph_nodes(&layout_node_ids, nodes, direction);
         }
         anchored_nodes.extend(sub.nodes.iter().cloned());
     }
@@ -1427,13 +1630,26 @@ pub(super) fn build_subgraph_layouts(
                 } else {
                     12.0
                 };
+                let top_clearance =
+                    if graph.kind == crate::mermaid_engine::ir::DiagramKind::Flowchart {
+                        let parent_sub = &graph.subgraphs[i];
+                        let (_, _, top_padding) = subgraph_padding_from_label(
+                            graph,
+                            parent_sub,
+                            theme,
+                            &subgraphs[local_i].label_block,
+                        );
+                        top_padding.max(pad)
+                    } else {
+                        pad
+                    };
                 let (child_x, child_y, child_w, child_h) = {
                     let child = &subgraphs[local_j];
                     (child.x, child.y, child.width, child.height)
                 };
                 let parent = &mut subgraphs[local_i];
                 let min_x = parent.x.min(child_x - pad);
-                let min_y = parent.y.min(child_y - pad);
+                let min_y = parent.y.min(child_y - top_clearance);
                 let max_x = (parent.x + parent.width).max(child_x + child_w + pad);
                 let max_y = (parent.y + parent.height).max(child_y + child_h + pad);
                 parent.x = min_x;

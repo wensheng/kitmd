@@ -1,6 +1,6 @@
 [package]
 name = "kitmd"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "A terminal-based markdown and mermaid renderer/viewer using the Kitty graphics protocol"
 license = "MIT"

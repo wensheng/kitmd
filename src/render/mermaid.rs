@@ -180,6 +180,69 @@ mod tests {
     }
 
     #[test]
+    fn flowchart_subgraph_layout_honors_parent_and_child_directions() {
+        let source = r#"flowchart LR
+  subgraph TOP
+    direction TB
+    subgraph B1
+        direction RL
+        i1 -->f1
+    end
+    subgraph B2
+        direction BT
+        i2 -->f2
+    end
+  end
+  A --> TOP --> B
+  B1 --> B2
+"#;
+        let parsed = parse_mermaid(source).unwrap();
+        let layout = compute_layout(&parsed.graph, &Theme::modern(), &LayoutConfig::default());
+
+        let top = subgraph_center(&layout, "TOP");
+        let b1 = subgraph_center(&layout, "B1");
+        let b2 = subgraph_center(&layout, "B2");
+        let a = node_center(&layout, "A");
+        let b = node_center(&layout, "B");
+        let f1 = node_center(&layout, "f1");
+        let i1 = node_center(&layout, "i1");
+        let f2 = node_center(&layout, "f2");
+        let i2 = node_center(&layout, "i2");
+
+        assert!(
+            (a.1 - top.1).abs() < 12.0,
+            "A should align with TOP on LR cross-axis: A={a:?}, TOP={top:?}"
+        );
+        assert!(
+            (b.1 - top.1).abs() < 12.0,
+            "B should align with TOP on LR cross-axis: B={b:?}, TOP={top:?}"
+        );
+        assert!(
+            b1.1 < b2.1 && (b1.0 - b2.0).abs() < 40.0,
+            "TOP direction TB should stack B1 above B2: B1={b1:?}, B2={b2:?}"
+        );
+        assert!(
+            f1.0 < i1.0 && (f1.1 - i1.1).abs() < 8.0,
+            "B1 direction RL should place f1 left of i1: f1={f1:?}, i1={i1:?}"
+        );
+        assert!(
+            f2.1 < i2.1 && (f2.0 - i2.0).abs() < 8.0,
+            "B2 direction BT should place f2 above i2: f2={f2:?}, i2={i2:?}"
+        );
+        let b1_b2_edge = layout
+            .edges
+            .iter()
+            .find(|edge| edge.from == "B1" && edge.to == "B2")
+            .expect("B1 -> B2 edge");
+        let edge_start = b1_b2_edge.points.first().copied().unwrap();
+        let edge_end = b1_b2_edge.points.last().copied().unwrap();
+        assert!(
+            edge_start.1 < edge_end.1 && (edge_start.0 - edge_end.0).abs() < 20.0,
+            "B1 -> B2 should route vertically inside TOP: start={edge_start:?}, end={edge_end:?}"
+        );
+    }
+
+    #[test]
     fn renders_class_stereotype_members_to_svg() {
         let svg = render_mermaid_svg(
             "classDiagram\nclass Backend {\n    <<trait>>\n    -markdown: String\n    +run()\n}\n",
@@ -386,6 +449,18 @@ mod tests {
     fn node_center(layout: &Layout, node_id: &str) -> (f32, f32) {
         let node = layout.nodes.get(node_id).unwrap();
         (node.x + node.width / 2.0, node.y + node.height / 2.0)
+    }
+
+    fn subgraph_center(layout: &Layout, label: &str) -> (f32, f32) {
+        let subgraph = layout
+            .subgraphs
+            .iter()
+            .find(|subgraph| subgraph.label == label)
+            .unwrap();
+        (
+            subgraph.x + subgraph.width / 2.0,
+            subgraph.y + subgraph.height / 2.0,
+        )
     }
 
     fn diamond_outline_distance(point: (f32, f32), node: &NodeLayout) -> f32 {

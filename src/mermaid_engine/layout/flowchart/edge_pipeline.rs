@@ -10,7 +10,7 @@ use super::super::routing::*;
 use super::super::{
     EDGE_OCCUPANCY_CELL_RATIO, EdgeLayout, FLOWCHART_EDGE_LABEL_WRAP_TRIGGER_CHARS,
     LayoutStageMetrics, MIN_NODE_SPACING_FLOOR, MULTI_EDGE_OFFSET_RATIO, NodeLayout,
-    SubgraphLayout, TextBlock, anchor_layout_for_edge,
+    SubgraphLayout, TextBlock, anchor_layout_for_edge, subgraph_edge_direction,
 };
 use super::path_cleanup;
 use super::plan;
@@ -246,15 +246,16 @@ pub(in crate::mermaid_engine::layout) fn build_routed_edges(
         else {
             continue;
         };
+        let edge_direction = subgraph_edge_direction(graph, nodes, &edge.from, &edge.to);
         let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
             subgraphs
                 .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+                .map(|sub| anchor_layout_for_edge(from_layout, sub, edge_direction, true))
         });
         let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
             subgraphs
                 .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+                .map(|sub| anchor_layout_for_edge(to_layout, sub, edge_direction, false))
         });
         let from = temp_from.as_ref().unwrap_or(from_layout);
         let to = temp_to.as_ref().unwrap_or(to_layout);
@@ -267,7 +268,7 @@ pub(in crate::mermaid_engine::layout) fn build_routed_edges(
             && (edge.style == crate::mermaid_engine::ir::EdgeStyle::Dotted
                 || edge_role.is_back_edge
                 || edge_role.crosses_subgraph_boundary);
-        let primary_sides = edge_sides(from, to, graph.direction);
+        let primary_sides = edge_sides(from, to, edge_direction);
         let mut selected_sides = if use_balanced_sides {
             let balanced = edge_sides_balanced(
                 &edge.from,
@@ -276,12 +277,12 @@ pub(in crate::mermaid_engine::layout) fn build_routed_edges(
                 to,
                 allow_low_degree_balancing,
                 edge_role.is_back_edge,
-                graph.direction,
+                edge_direction,
                 &node_degrees,
                 &side_loads,
             );
             if edge_role.is_back_edge {
-                choose_outer_back_edge_sides(from, to, graph.direction, content_bounds, balanced)
+                choose_outer_back_edge_sides(from, to, edge_direction, content_bounds, balanced)
             } else {
                 balanced
             }
@@ -334,15 +335,16 @@ pub(in crate::mermaid_engine::layout) fn build_routed_edges(
         else {
             continue;
         };
+        let edge_direction = subgraph_edge_direction(graph, nodes, &edge.from, &edge.to);
         let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
             subgraphs
                 .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+                .map(|sub| anchor_layout_for_edge(from_layout, sub, edge_direction, true))
         });
         let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
             subgraphs
                 .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+                .map(|sub| anchor_layout_for_edge(to_layout, sub, edge_direction, false))
         });
         let from = temp_from.as_ref().unwrap_or(from_layout);
         let to = temp_to.as_ref().unwrap_or(to_layout);
@@ -527,15 +529,16 @@ pub(in crate::mermaid_engine::layout) fn build_routed_edges(
         else {
             continue;
         };
+        let edge_direction = subgraph_edge_direction(graph, nodes, &edge.from, &edge.to);
         let temp_from = from_layout.anchor_subgraph.and_then(|idx| {
             subgraphs
                 .get(idx)
-                .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+                .map(|sub| anchor_layout_for_edge(from_layout, sub, edge_direction, true))
         });
         let temp_to = to_layout.anchor_subgraph.and_then(|idx| {
             subgraphs
                 .get(idx)
-                .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+                .map(|sub| anchor_layout_for_edge(to_layout, sub, edge_direction, false))
         });
         let from = temp_from.as_ref().unwrap_or(from_layout);
         let to = temp_to.as_ref().unwrap_or(to_layout);
@@ -543,17 +546,17 @@ pub(in crate::mermaid_engine::layout) fn build_routed_edges(
         let to_center = (to.x + to.width / 2.0, to.y + to.height / 2.0);
         let dx = to_center.0 - from_center.0;
         let dy = to_center.1 - from_center.1;
-        let cross_axis = if is_horizontal(graph.direction) {
+        let cross_axis = if is_horizontal(edge_direction) {
             dy.abs()
         } else {
             dx.abs()
         };
-        let main_axis = if is_horizontal(graph.direction) {
+        let main_axis = if is_horizontal(edge_direction) {
             dx.abs()
         } else {
             dy.abs()
         };
-        let (_, _, is_backward) = edge_sides(from, to, graph.direction);
+        let (_, _, is_backward) = edge_sides(from, to, edge_direction);
         let is_dotted = edge.style == crate::mermaid_engine::ir::EdgeStyle::Dotted;
         let has_label = edge.label.is_some();
         let is_secondary = is_dotted || has_label;
@@ -667,15 +670,16 @@ pub(in crate::mermaid_engine::layout) fn build_routed_edges(
         else {
             continue;
         };
+        let edge_direction = subgraph_edge_direction(graph, nodes, &edge.from, &edge.to);
         let temp_from = from_layout.anchor_subgraph.and_then(|idx| {
             subgraphs
                 .get(idx)
-                .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+                .map(|sub| anchor_layout_for_edge(from_layout, sub, edge_direction, true))
         });
         let temp_to = to_layout.anchor_subgraph.and_then(|idx| {
             subgraphs
                 .get(idx)
-                .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+                .map(|sub| anchor_layout_for_edge(to_layout, sub, edge_direction, false))
         });
         let from = temp_from.as_ref().unwrap_or(from_layout);
         let to = temp_to.as_ref().unwrap_or(to_layout);
@@ -735,7 +739,7 @@ pub(in crate::mermaid_engine::layout) fn build_routed_edges(
             to_id: &edge.to,
             from,
             to,
-            direction: graph.direction,
+            direction: edge_direction,
             config,
             obstacles: &obstacles,
             label_obstacles: &route_label_obstacles,
@@ -822,7 +826,7 @@ pub(in crate::mermaid_engine::layout) fn build_routed_edges(
         }
         if route_labels_via {
             let mut sync_ctx = route_labels::RouteLabelSyncContext {
-                direction: graph.direction,
+                direction: edge_direction,
                 kind: graph.kind,
                 route_label_plans: &mut route_label_plans,
                 label_anchors: &mut label_anchors,
@@ -849,8 +853,13 @@ pub(in crate::mermaid_engine::layout) fn build_routed_edges(
 
     if route_labels_via {
         for idx in 0..routed_points.len() {
+            let edge_direction = graph
+                .edges
+                .get(idx)
+                .map(|edge| subgraph_edge_direction(graph, nodes, &edge.from, &edge.to))
+                .unwrap_or(graph.direction);
             let mut sync_ctx = route_labels::RouteLabelSyncContext {
-                direction: graph.direction,
+                direction: edge_direction,
                 kind: graph.kind,
                 route_label_plans: &mut route_label_plans,
                 label_anchors: &mut label_anchors,
