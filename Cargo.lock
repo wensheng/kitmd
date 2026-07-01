@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "kitmd"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "atty",
@@ -994,6 +994,7 @@ dependencies = [
  "fontdb",
  "image",
  "json5",
+ "libc",
  "once_cell",
  "regex",
  "resvg",

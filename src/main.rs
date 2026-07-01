@@ -1,5 +1,6 @@
 mod mermaid_engine;
 mod render;
+mod terminal_geometry;
 
 use std::{
     io::{self, Read, Write},
@@ -15,9 +16,12 @@ use crate::render::{
     markdown::{MarkdownRenderOptions, render_markdown_document, render_markdown_document_image},
     mermaid::{MermaidRenderOptions, render_mermaid_png},
 };
+use crate::terminal_geometry::{TerminalGeometry, cells_for_pixels};
 
 const DEFAULT_RENDER_ZOOM: f32 = 2.0;
 const DEFAULT_ZOOM_MULTIPLIER: f32 = 1.0;
+const LETTER_WIDTH_150_DPI_PX: u32 = 1275;
+const DEFAULT_MARKDOWN_WIDTH_PX: u32 = LETTER_WIDTH_150_DPI_PX * 16 / 10;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -33,7 +37,7 @@ struct Args {
     #[arg(long = "input-type", value_enum, default_value_t = InputType::Auto)]
     input_type: InputType,
 
-    /// Layout width in terminal columns. Defaults to current terminal width.
+    /// Markdown layout width in terminal columns. Defaults to 1.6x letter width at 150 DPI.
     #[arg(long = "width-cols")]
     width_cols: Option<u16>,
 
@@ -107,7 +111,7 @@ fn resolve_input_type(input_type: InputType, path: Option<&Path>) -> FileType {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let width_cols = resolved_width_cols(args.width_cols);
+    let width_cols = args.width_cols;
     let theme = ThemeMode::from(args.theme);
     let zoom = render_zoom(args.zoom);
     let output = args.output;
@@ -179,7 +183,7 @@ fn render_content(
     content: &str,
     base_dir: Option<&Path>,
     input_type: FileType,
-    width_cols: u16,
+    width_cols: Option<u16>,
     theme: ThemeMode,
     zoom: f32,
     output: OutputTarget<'_>,
@@ -190,14 +194,15 @@ fn render_content(
             match input_type {
                 FileType::Markdown => {
                     let options =
-                        MarkdownRenderOptions::new(pixel_width_for_cols(width_cols), theme)
+                        MarkdownRenderOptions::new(markdown_render_width_px(width_cols), theme)
                             .with_zoom(zoom);
+                    let placement_cols = markdown_terminal_width_cols(width_cols);
                     let images = render_markdown_document(content, base_dir, &options)?;
                     for image in images {
                         print_image(
                             &mut stdout,
                             image,
-                            PlacementOptions::scaled_to_width(width_cols),
+                            PlacementOptions::scaled_to_width(placement_cols),
                         )?;
                     }
                 }
@@ -210,8 +215,9 @@ fn render_content(
         }
         OutputTarget::Png(path) => match input_type {
             FileType::Markdown => {
-                let options = MarkdownRenderOptions::new(pixel_width_for_cols(width_cols), theme)
-                    .with_zoom(zoom);
+                let options =
+                    MarkdownRenderOptions::new(markdown_render_width_px(width_cols), theme)
+                        .with_zoom(zoom);
                 let image = render_markdown_document_image(content, base_dir, &options)?;
                 let rendered = RenderedImage::from_rgba_owned(image)?;
                 write_png_file(path, &rendered.png)?;
@@ -233,15 +239,31 @@ fn read_stdin() -> Result<String> {
     Ok(buffer)
 }
 
-fn resolved_width_cols(width_cols: Option<u16>) -> u16 {
+fn markdown_render_width_px(width_cols: Option<u16>) -> u32 {
     width_cols
-        .or_else(|| crossterm::terminal::size().ok().map(|(cols, _)| cols))
-        .unwrap_or(80)
-        .max(20)
+        .map(pixel_width_for_cols)
+        .unwrap_or(DEFAULT_MARKDOWN_WIDTH_PX)
+}
+
+fn markdown_terminal_width_cols(width_cols: Option<u16>) -> u16 {
+    width_cols
+        .map(normalized_width_cols)
+        .unwrap_or_else(|| markdown_display_width_cols(TerminalGeometry::current()))
+}
+
+fn markdown_display_width_cols(geometry: TerminalGeometry) -> u16 {
+    let target_width_px = DEFAULT_MARKDOWN_WIDTH_PX.min(geometry.drawable_width_px(0));
+    cells_for_pixels(target_width_px, geometry.cell_width_px)
+        .min(u32::from(geometry.cols))
+        .max(1) as u16
 }
 
 fn pixel_width_for_cols(cols: u16) -> u32 {
-    u32::from(cols.max(20)) * 12
+    u32::from(normalized_width_cols(cols)) * 12
+}
+
+fn normalized_width_cols(cols: u16) -> u16 {
+    cols.max(20)
 }
 
 fn parse_zoom(value: &str) -> std::result::Result<f32, String> {
@@ -339,9 +361,27 @@ mod tests {
     }
 
     #[test]
-    fn pixel_width_scales_from_columns() {
+    fn default_markdown_width_is_one_point_six_times_letter_at_150_dpi() {
+        assert_eq!(markdown_render_width_px(None), 2040);
+    }
+
+    #[test]
+    fn width_cols_override_scales_from_columns() {
         assert_eq!(pixel_width_for_cols(80), 960);
         assert_eq!(pixel_width_for_cols(1), 240);
+        assert_eq!(markdown_render_width_px(Some(80)), 960);
+    }
+
+    #[test]
+    fn default_terminal_display_uses_letter_width_when_it_fits() {
+        let geometry = TerminalGeometry::with_cell_size(240, 40, 10, 20);
+        assert_eq!(markdown_display_width_cols(geometry), 204);
+    }
+
+    #[test]
+    fn default_terminal_display_clamps_to_terminal_width() {
+        let geometry = TerminalGeometry::with_cell_size(80, 40, 10, 20);
+        assert_eq!(markdown_display_width_cols(geometry), 80);
     }
 
     #[test]
@@ -396,7 +436,7 @@ mod tests {
             "flowchart LR\nA-->B",
             None,
             FileType::Mermaid,
-            80,
+            None,
             ThemeMode::Dark,
             2.0,
             OutputTarget::Png(&file),
@@ -407,6 +447,25 @@ mod tests {
         let decoded = image::open(&file).unwrap().to_rgba8();
         assert!(decoded.width() > 0);
         assert!(decoded.height() > 0);
+        let _ = fs::remove_file(file);
+    }
+
+    #[test]
+    fn writes_markdown_output_at_default_width() {
+        let file = temp_png_path("markdown_default_width");
+        render_content(
+            "# Title\n\nA short paragraph.",
+            None,
+            FileType::Markdown,
+            None,
+            ThemeMode::Dark,
+            2.0,
+            OutputTarget::Png(&file),
+        )
+        .unwrap();
+
+        let decoded = image::open(&file).unwrap().to_rgba8();
+        assert_eq!(decoded.width(), DEFAULT_MARKDOWN_WIDTH_PX);
         let _ = fs::remove_file(file);
     }
 
@@ -430,7 +489,7 @@ mod tests {
             &content,
             None,
             FileType::Markdown,
-            width_cols,
+            Some(width_cols),
             ThemeMode::Dark,
             2.0,
             OutputTarget::Png(&file),

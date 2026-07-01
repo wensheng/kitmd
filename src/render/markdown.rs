@@ -17,6 +17,9 @@ use crate::render::{
     mermaid::{MermaidRenderOptions, rasterize_svg, render_error_block, render_mermaid_image},
 };
 
+const MARKDOWN_FONT_SIZE_BUMP: f32 = 2.0;
+const MARKDOWN_FONT_SCALE: f32 = 1.5;
+
 #[derive(Debug, Clone)]
 pub struct MarkdownRenderOptions {
     pub width_px: u32,
@@ -148,13 +151,13 @@ impl MarkdownRenderer {
                 for span in &mut spans {
                     span.style.bold = true;
                 }
-                let font_size = match heading.level {
+                let font_size = markdown_font_size(match heading.level {
                     1 => 34.0,
                     2 => 28.0,
                     3 => 23.0,
                     4 => 20.0,
                     _ => 18.0,
-                };
+                });
                 blocks.push(self.text_block(spans, font_size, font_size * 1.28, 22, 10));
             }
             NodeValue::Paragraph => {
@@ -244,7 +247,12 @@ impl MarkdownRenderer {
                 },
             }];
             spans.extend(collect_rich_text(item));
-            blocks.push(self.indented_text_block(spans, 16.0, 22.0, 46));
+            blocks.push(self.indented_text_block(
+                spans,
+                markdown_font_size(16.0),
+                markdown_line_height(22.0),
+                46,
+            ));
         }
         Ok(())
     }
@@ -265,7 +273,13 @@ impl MarkdownRenderer {
     }
 
     fn paragraph_block(&mut self, spans: Vec<TextSpan>) -> RgbaImage {
-        self.text_block(spans, 17.0, 25.0, 24, 12)
+        self.text_block(
+            spans,
+            markdown_font_size(17.0),
+            markdown_line_height(25.0),
+            24,
+            12,
+        )
     }
 
     fn text_block(
@@ -325,8 +339,8 @@ impl MarkdownRenderer {
                 width: self.options.width_px,
                 padding_x: 24,
                 padding_y: 14,
-                font_size: 15.0,
-                line_height: 22.0,
+                font_size: markdown_font_size(15.0),
+                line_height: markdown_line_height(22.0),
                 background: self.theme.code_bg,
                 default_color: self.theme.text,
                 link_color: self.theme.link,
@@ -350,8 +364,8 @@ impl MarkdownRenderer {
                 width: self.options.width_px.saturating_sub(24),
                 padding_x: 18,
                 padding_y: 12,
-                font_size: 16.0,
-                line_height: 24.0,
+                font_size: markdown_font_size(16.0),
+                line_height: markdown_line_height(24.0),
                 background: self.theme.blockquote_bg,
                 default_color: self.theme.muted_text,
                 link_color: self.theme.link,
@@ -410,8 +424,8 @@ impl MarkdownRenderer {
                         width: widths[col],
                         padding_x: 8,
                         padding_y: 7,
-                        font_size: 14.0,
-                        line_height: 20.0,
+                        font_size: markdown_font_size(14.0),
+                        line_height: markdown_line_height(20.0),
                         background: if rendered_rows.is_empty() {
                             self.theme.table_header_bg
                         } else {
@@ -515,8 +529,8 @@ impl MarkdownRenderer {
                 width: self.options.width_px,
                 padding_x: 24,
                 padding_y: 12,
-                font_size: 15.0,
-                line_height: 21.0,
+                font_size: markdown_font_size(15.0),
+                line_height: markdown_line_height(21.0),
                 background: self.theme.error_bg,
                 default_color: self.theme.error_text,
                 link_color: self.theme.link,
@@ -525,6 +539,14 @@ impl MarkdownRenderer {
             },
         )
     }
+}
+
+fn markdown_font_size(size: f32) -> f32 {
+    (size + MARKDOWN_FONT_SIZE_BUMP) * MARKDOWN_FONT_SCALE
+}
+
+fn markdown_line_height(line_height: f32) -> f32 {
+    line_height * MARKDOWN_FONT_SCALE
 }
 
 fn collect_inline_children<'a>(

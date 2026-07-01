@@ -82,4 +82,6 @@ kitmd keeps the hot path local: Markdown is parsed with Comrak’s GFM extension
 kitmd [--input-type auto|markdown|mermaid] [--width-cols N] [--theme dark|light] [--zoom RATIO] [--output FILE.png] <FILE|->
 ```
 
+Markdown renders at a fixed 2040 px width (1.6x an 8.5 in letter page at 150 DPI) unless `--width-cols` is provided. Terminal output uses the terminal cell pixel size to display that width when it fits, clamping to the terminal width when needed.
+
 `--output` writes a PNG file and skips terminal rendering. Markdown exports as one tall PNG; Mermaid exports the rendered diagram PNG directly.
